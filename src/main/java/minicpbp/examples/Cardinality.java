@@ -28,7 +28,8 @@ public class Cardinality {
 		cp.fixPoint();
 		cp.setTraceBPFlag(true);
 		cp.setTraceSearchFlag(true);
-		cp.vanillaBP(10);
+		// cp.vanillaBP(10);
+		cp.beliefPropa();
 
 		/*
 		 * DFSearch dfs = Factory.makeDfs(cp, maxMarginal(flatten(mines)));

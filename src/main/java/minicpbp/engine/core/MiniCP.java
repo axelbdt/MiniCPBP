@@ -467,7 +467,7 @@ public class MiniCP implements Solver {
 		final double MIN_DAMPING_FACTOR = 0.5;
 		final double DAMPING_FACTOR_DELTA = 0.15;
 		setDamp(true);
-		setDampingFactor(1.0);
+		setDampingFactor(0.7);
 		boolean dampingFactorDetermined = false;
 		double previousEntropy, currentEntropy;
 		double previousDeltaEntropy, currentDeltaEntropy;
