@@ -374,24 +374,25 @@ public class MiniCP implements Solver {
 					System.out.println("max entropy : " + maxEntropy);
 				}
 				// stopping criteria
-				if (currentEntropy == 0) { // either all branching vars are bound or BP says there's no solution
-					break;
-				}
-				if (smallEntropy <= MIN_VAR_ENTROPY) { // at least one variable with low uncertainty about the value it
-														// should take
-					break;
-				}
-				if ((iter > 1) /* give it a chance to kick in */ && (currentEntropy == previousEntropy)) { // marginals
-																											// probably
-																											// did not
-																											// change
-																											// either
-																											// (and
-																											// won't in
-																											// the
-																											// future)
-					break;
-				}
+				// if (currentEntropy == 0) { // either all branching vars are bound or BP says
+				// there's no solution
+//					break;
+//				}
+//				if (smallEntropy <= MIN_VAR_ENTROPY) { // at least one variable with low uncertainty about the value it
+//														// should take
+//					break;
+//				}
+//				if ((iter > 1) /* give it a chance to kick in */ && (currentEntropy == previousEntropy)) { // marginals
+//																											// probably
+//																											// did not
+//																											// change
+//																											// either
+//																											// (and
+//																											// won't in
+//																											// the
+//																											// future)
+//					break;
+//				}
 				// if ((iter > 2) /* give it a chance to stabilize */ && (currentEntropy -
 				// previousEntropy > ENTROPY_TOLERANCE)) { // entropy actually increased
 				// break;
