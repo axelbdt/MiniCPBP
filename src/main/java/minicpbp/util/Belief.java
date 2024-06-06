@@ -19,73 +19,87 @@
 package minicpbp.util;
 
 /**
- * Operations on beliefs/marginals/probabilities
- * min value is ZERO; max value is ONE
+ * Operations on beliefs/marginals/probabilities min value is ZERO; max value is
+ * ONE
  */
 public interface Belief {
-    
-    /**
-     * returns value ONE
-     */
-    double one();
 
-    /**
-     * returns value ZERO
-     */
-    double zero();
+	/**
+	 * returns value ONE
+	 */
+	double one();
 
-    /**
-     * returns true iff belief == ONE
-     */
-    boolean isOne(double belief);
+	/**
+	 * returns value ZERO
+	 */
+	double zero();
 
-    /**
-     * returns true iff belief == ZERO
-     */
-    boolean isZero(double belief);
+	/**
+	 * returns true iff belief == ONE
+	 */
+	boolean isOne(double belief);
 
-    /**
-     * returns the conversion of value a from the standard representation to whatever the implemented representation is
-     */
-    double std2rep(double a);
+	/**
+	 * returns true iff belief == ZERO
+	 */
+	boolean isZero(double belief);
 
-    /**
-     * returns the conversion of value a from whatever the implemented representation is to the standard representation
-     */
-    double rep2std(double a);
+	/**
+	 * returns the conversion of value a from the standard representation to
+	 * whatever the implemented representation is
+	 */
+	double std2rep(double a);
 
-    /**
-     * returns the product of beliefs a and b
-     */
-    double multiply(double a, double b);
+	/**
+	 * returns the conversion of value a from whatever the implemented
+	 * representation is to the standard representation
+	 */
+	double rep2std(double a);
 
-    /**
-     * returns the division of belief a by b
-     */
-    double divide(double a, double b);
+	/**
+	 * returns the conversion of value a from whatever the implemented
+	 * representation to the log representation
+	 */
+	double rep2log(double a);
 
-    /**
-     * returns the sum of beliefs a and b
-     */
-    double add(double a, double b);
+	/**
+	 * returns the conversion of value a from the log representation to whatever the
+	 * implemented representation
+	 */
+	double log2rep(double a);
 
-    /**
-     * returns the difference between beliefs a and b
-     */
-    double subtract(double a, double b);
+	/**
+	 * returns the product of beliefs a and b
+	 */
+	double multiply(double a, double b);
 
-    /**
-     * returns b s.t. add(a,b)==ONE
-     */
-    double complement(double a);
+	/**
+	 * returns the division of belief a by b
+	 */
+	double divide(double a, double b);
 
-    /**
-     * returns the sum of beliefs in array a of given size 
-     */
-    double summation(double a[], int size);
+	/**
+	 * returns the sum of beliefs a and b
+	 */
+	double add(double a, double b);
 
-    /**
-     * returns the elevation of belief a to the power b
-     */
-    double pow(double a, double b);
+	/**
+	 * returns the difference between beliefs a and b
+	 */
+	double subtract(double a, double b);
+
+	/**
+	 * returns b s.t. add(a,b)==ONE
+	 */
+	double complement(double a);
+
+	/**
+	 * returns the sum of beliefs in array a of given size
+	 */
+	double summation(double a[], int size);
+
+	/**
+	 * returns the elevation of belief a to the power b
+	 */
+	double pow(double a, double b);
 }

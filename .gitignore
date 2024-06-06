@@ -10,3 +10,9 @@ minicp.zip
 userguide/build/
 userguide/userguideenv/
 dependency-reduced-pom.xml
+
+#eclipse
+.project
+.classpath
+.settings
+bin/

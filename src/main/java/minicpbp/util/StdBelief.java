@@ -19,69 +19,76 @@
 package minicpbp.util;
 
 /**
- * Operations on beliefs/marginals/probabilities
- * Adopting a standard probability representation
+ * Operations on beliefs/marginals/probabilities Adopting a standard probability
+ * representation
  */
 public class StdBelief implements Belief {
-    
 
-    private static final double ONE = 1.0;
-    private static final double ZERO = 0.0;
+	private static final double ONE = 1.0;
+	private static final double ZERO = 0.0;
 
-    public  double one() {
-	return ONE;
-    }
-
-    public  double zero() {
-	return ZERO;
-    }
-
-    public  boolean isOne(double belief) {
-	return belief == ONE;
-    }
-
-    public  boolean isZero(double belief) {
-	return belief == ZERO;
-    }
-
-    public  double std2rep(double a) {
-	return a;
-    }
-
-    public  double rep2std(double a) {
-	return a;
-    }
-
-    public  double multiply(double a, double b) {
-	return a*b;
-    }
-
-    public  double divide(double a, double b) {
-	return a/b;
-    }
-
-    public  double add(double a, double b) {
-	return a+b; 
-    }
-
-    public  double subtract(double a, double b) {
-        return a-b;
-    }
-
-    public  double complement(double a) {
-	return 1 - a;
-    }
-
-    public  double summation(double a[], int size) {
- 	double sum = 0;
-	for (int j=0; j<size; j++) {
-	    sum += a[j];
+	public double one() {
+		return ONE;
 	}
-     	return sum;
-    }
 
-    public  double pow(double a, double b) {
-	return Math.pow(a,b);
-    }
+	public double zero() {
+		return ZERO;
+	}
+
+	public boolean isOne(double belief) {
+		return belief == ONE;
+	}
+
+	public boolean isZero(double belief) {
+		return belief == ZERO;
+	}
+
+	public double std2rep(double a) {
+		return a;
+	}
+
+	public double rep2std(double a) {
+		return a;
+	}
+
+	public double rep2log(double a) {
+		return Math.log(a);
+	}
+
+	public double log2rep(double a) {
+		return Math.exp(a);
+	}
+
+	public double multiply(double a, double b) {
+		return a * b;
+	}
+
+	public double divide(double a, double b) {
+		return a / b;
+	}
+
+	public double add(double a, double b) {
+		return a + b;
+	}
+
+	public double subtract(double a, double b) {
+		return a - b;
+	}
+
+	public double complement(double a) {
+		return 1 - a;
+	}
+
+	public double summation(double a[], int size) {
+		double sum = 0;
+		for (int j = 0; j < size; j++) {
+			sum += a[j];
+		}
+		return sum;
+	}
+
+	public double pow(double a, double b) {
+		return Math.pow(a, b);
+	}
 
 }
