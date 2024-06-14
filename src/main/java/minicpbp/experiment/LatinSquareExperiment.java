@@ -11,7 +11,7 @@ public class LatinSquareExperiment {
 		String fileName = "qwh-o30-h374-01.xml";
 		String filePath = "./src/main/java/minicpbp/experiment/instances/LatinSquare-m1-gp/" + fileName;
 
-		try (BufferedWriter bw = new BufferedWriter(new FileWriter("latinsquare-01-solution2.xml"))) {
+		try (BufferedWriter bw = new BufferedWriter(new FileWriter("latinsquare-01-solution2.xml", true))) {
 			XCSP xcsp = new XCSP(filePath);
 
 			System.out.println("Starting to solve");
