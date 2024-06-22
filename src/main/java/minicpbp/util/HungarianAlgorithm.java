@@ -580,7 +580,13 @@ public class HungarianAlgorithm {
 
 		// Square
 		double inf = Double.POSITIVE_INFINITY;
-		double[][] test4 = { { 10, 19, 8, inf }, { 10, 18, 7, 17 }, { 13, 16, 9, 14 }, { 14, 17, 10, 19 } };
+		double m = Double.MAX_VALUE;
+
+		// runs forever
+		// double[][] test4 = { { 10, 19, inf, inf }, { 10, 18, inf, inf }, { 13, 16,
+		// inf, inf }, { 14, 17, 10, 19 } };
+
+		double[][] test4 = { { 0, 19, m, m }, { 10, 0, m, m }, { 13, 16, m, m }, { 14, 17, 10, 19 } };
 
 		System.out.println(hgAlgorithm(test1, "min"));
 		System.out.println(hgAlgorithm(test1, "max"));

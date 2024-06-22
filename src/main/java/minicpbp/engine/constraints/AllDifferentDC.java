@@ -38,7 +38,6 @@ import minicpbp.util.exception.InconsistencyException;
  * in CSPs" J-C. Régin, AAAI-94
  */
 public class AllDifferentDC extends AbstractConstraint {
-
 	private IntVar[] x;
 
 	private final MaximumMatching maximumMatching;
@@ -238,7 +237,6 @@ public class AllDifferentDC extends AbstractConstraint {
 
 	@Override
 	public void updateBelief() {
-		System.out.println("Updating belief");
 		int nbVar, nbVal;
 		// update freeVars/Vals according to bound variables
 		nbVar = freeVars.fillArray(varIndices);
@@ -273,29 +271,36 @@ public class AllDifferentDC extends AbstractConstraint {
 				for (int k = 0; k < nbVal; k++) {
 					int val = vals[k];
 					if (x[i].contains(val)) {
-						double[][] costs = createCostMatrix(j, k, nbVar - 1, nbVal - 1);
+						double[][] costs = createCostMatrix(j, k, nbVar, nbVal);
 						double matchingCost = HungarianAlgorithm.hgAlgorithm(costs, "min");
-						setLocalBelief(i, val, beliefRep.log2rep(-matchingCost));
+						double newBelief = matchingCost == Double.MAX_VALUE ? beliefRep.zero()
+								: beliefRep.log2rep(-matchingCost);
+						setLocalBelief(i, val, newBelief);
 					}
 				}
 			}
-		} else {
-			System.out.println("All variable bound");
 		}
 
 		// may need to add dummy rows in order to make the beliefs matrix square
 	}
 
 	public double[][] createCostMatrix(int var, int val, int nbVar, int nbVal) {
-		double[][] costs = new double[nbVar][nbVal];
+		double[][] costs = new double[nbVar - 1][nbVal - 1];
 		for (int j = 0; j < nbVar; j++) {
 			if (j != var) {
-				int i = j > var ? varIndices[j - 1] : varIndices[j];
+				int jj = j > var ? j - 1 : j;
+				int i = varIndices[jj];
 				for (int k = 0; k < nbVal; k++) {
 					if (k != val) {
-						int v = k > val ? vals[k - 1] : vals[k];
-						costs[j][k] = (x[i].contains(v) ? -beliefRep.rep2log(outsideBelief(i, v))
-								: Double.POSITIVE_INFINITY);
+						int kk = k > val ? k - 1 : k;
+						int v = vals[kk];
+						try {
+
+							costs[jj][kk] = (x[i].contains(v) ? -beliefRep.rep2log(outsideBelief(i, v))
+									: Double.MAX_VALUE);
+						} catch (Exception e) {
+							System.out.println("Out of bounds");
+						}
 					}
 				}
 			}
