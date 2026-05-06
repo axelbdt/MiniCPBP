@@ -1,0 +1,4 @@
+{:aliases
+ {:mcp {:deps {io.github.bhauman/clojure-mcp
+               {:git/tag "v0.3.1" :git/sha "81005ce"}}
+        :ns-default clojure-mcp.main}}}
