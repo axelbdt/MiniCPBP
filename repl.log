@@ -1,0 +1,8 @@
+Picked up _JAVA_OPTIONS: -Dsun.java2d.uiScale=2
+WARNING: bound? already refers to: #'clojure.core/bound? in namespace: minicpbp.repl, being replaced by: #'minicpbp.repl/bound?
+Reflection warning, prototype/server.clj:107:11 - reference to field solve on java.lang.Object can't be resolved.
+UI server started → http://localhost:3000
+nREPL server started on 127.0.0.1:34715
+Editors that read .nrepl-port (Calva, CIDER, Cursive) will auto-connect.
+Helpers are pre-loaded in the minicpbp.repl namespace.
+Press Ctrl-C to stop.

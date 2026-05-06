@@ -40,6 +40,9 @@ public class IntVarViewOpposite implements IntVar {
     }
 
     @Override
+    public IntVar getBaseVar() { return x.getBaseVar(); }
+
+    @Override
     public Solver getSolver() {
         return x.getSolver();
     }

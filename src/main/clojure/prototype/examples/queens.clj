@@ -20,19 +20,22 @@
   ([] (build-search 4))
   ([n]
    (let [^Solver cp (Factory/makeSolver false)
-         q          (Factory/makeIntVarArray cp (int n) (int n))]
-     (doseq [i (range n)
-             j (range (inc i) n)]
-       (let [^IntVar qi (aget ^objects q i)
-             ^IntVar qj (aget ^objects q j)
-             pos        (int (- j i))
-             neg        (int (- i j))]
-         (.post cp (Factory/notEqual qi qj))
-         (.post cp (Factory/notEqual qi qj pos))
-         (.post cp (Factory/notEqual qi qj neg))))
+         q (Factory/makeIntVarArray cp (int n) (int n))
+         _ (doseq [i (range n)]
+             (.setName ^IntVar (aget ^objects q i) (str "q[" (inc i) "]")))
+         diag+ (into-array IntVar
+                           (map-indexed (fn [i ^IntVar v] (Factory/plus v (int i))) q))
+         diag- (into-array IntVar
+                           (map-indexed (fn [i ^IntVar v] (Factory/minus v (int i))) q))
+         c-col (doto (Factory/allDifferent q) (.setName "queens"))
+         c-diag+ (doto (Factory/allDifferent diag+) (.setName "all_diff(q[i]+i)"))
+         c-diag- (doto (Factory/allDifferent diag-) (.setName "all_diff(q[i]-i)"))]
+     (.post cp c-col)
+     (.post cp c-diag+)
+     (.post cp c-diag-)
      {:solver cp
       :search (Factory/makeDfs cp (BranchingScheme/firstFail q))
-      :vars   q})))
+      :vars q})))
 
 (defn run!
   "Build a fresh n-queens search, install the tracer, solve all
@@ -40,7 +43,7 @@
   ([] (run! 4))
   ([n]
    (let [{:keys [^DFSearch search]} (build-search n)
-         store                       (t/make-store)]
+         store (t/make-store)]
      (t/install-listeners! search store)
      (.solve search)
      store)))
@@ -68,6 +71,4 @@
   ;; iterate: edit prototype/trace.clj, then
   (require 'prototype.trace :reload)
   (require 'prototype.examples.queens :reload)
-  (def store (run!))
-
-  )
+  (def store (run!)))

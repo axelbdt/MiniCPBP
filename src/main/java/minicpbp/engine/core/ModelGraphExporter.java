@@ -45,6 +45,7 @@ public class ModelGraphExporter {
             if (scope != null) {
                 for (IntVar v : scope) {
                     Integer vId = varToId.get(v);
+                    if (vId == null) vId = varToId.get(v.getBaseVar());
                     if (vId != null) {
                         Map<String, Object> edge = new LinkedHashMap<>();
                         edge.put("source", vId);

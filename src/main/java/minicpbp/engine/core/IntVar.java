@@ -337,4 +337,7 @@ public interface IntVar {
     public String getName();
     public void setName(String name);
     public void registerConstraint(Constraint c);
+
+    /** Returns the base (non-view) variable underlying this variable or view. */
+    default IntVar getBaseVar() { return this; }
 }
