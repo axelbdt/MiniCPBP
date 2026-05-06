@@ -3,7 +3,8 @@
             [cheshire.core :as json]
             [clojure.java.io :as io]
             [prototype.trace :as t]
-            [prototype.examples.queens :as queens]))
+            [prototype.examples.queens :as queens])
+  (:import [minicpbp.engine.core ModelGraphExporter]))
 
 (set! *warn-on-reflection* true)
 
@@ -11,6 +12,7 @@
 ;; State
 
 (defonce current-store (atom nil))
+(defonce current-solver (atom nil))
 (defonce stop-fn (atom nil))
 
 (defn set-store! [store]
@@ -99,12 +101,24 @@
     "/api/run-queens"
     (let [n (or (some-> (get (parse-qs (:query-string req)) "n") parse-long) 4)]
       (try
-        (reset! current-store (queens/run! n))
-        (json-response {:status "ok" :n n})
+        (let [{:keys [search solver]} (queens/build-search n)
+              store (t/make-store)]
+          (t/install-listeners! search store)
+          (.solve search)
+          (reset! current-store store)
+          (reset! current-solver solver)
+          (json-response {:status "ok" :n n}))
         (catch Exception e
           {:status 500
            :headers {"Content-Type" "application/json"}
            :body (json/generate-string {:error (.getMessage e)})})))
+
+    "/api/model-graph"
+    (if @current-solver
+      (json-response (ModelGraphExporter/export @current-solver))
+      {:status 404
+       :headers {"Content-Type" "application/json"}
+       :body "{\"error\":\"No model loaded — run a solver first\"}"})
 
     (serve-static (:uri req))))
 

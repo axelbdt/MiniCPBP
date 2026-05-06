@@ -19,3 +19,6 @@
       (.catch (fn [err]
                 (js/console.error "run-queens error" err)
                 (cb {:error (str err)})))))
+
+(defn fetch-model-graph! [cb]
+  (get-json! "/api/model-graph" cb))
