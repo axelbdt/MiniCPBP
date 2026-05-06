@@ -4,9 +4,14 @@
 project/
 target/
 .m2
+.shadow-cljs/
+node_modules/
+public/js/
 .vscode
 *.iml
 minicp.zip
 userguide/build/
 userguide/userguideenv/
 dependency-reduced-pom.xml
+.cpcache
+.nrepl-port

@@ -50,5 +50,21 @@ if [ -z "$PORT" ]; then
   exit 1
 fi
 
+# Start the UI HTTP server on port 3000 via nREPL eval.
+python3 - "$PORT" <<'PYEOF'
+import socket, sys
+
+port = int(sys.argv[1])
+code = "(do (require '[prototype.server :as server]) (server/start!))"
+cb = code.encode()
+msg = b"d4:code" + str(len(cb)).encode() + b":" + cb + b"2:id1:12:op4:evale"
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(("127.0.0.1", port))
+s.sendall(msg)
+s.recv(4096)
+s.close()
+PYEOF
+
 # Foreground (no exec) so the trap fires when clojure-mcp exits.
 clojure -T:mcp start :port "$PORT"

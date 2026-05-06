@@ -1,0 +1,9 @@
+{:source-paths ["src/main/cljs"]
+ :dependencies [[reagent "1.2.0"]]
+ :local-repo ".shadow-cljs/m2"
+ :nrepl {:port 7890}
+ :builds {:app {:target :browser
+                :output-dir "public/js"
+                :asset-path "/js"
+                :modules {:main {:init-fn prototype.ui.core/init!}}
+                :devtools {:watch-dir "public"}}}}

@@ -56,3 +56,7 @@
   "Create an IntVar with domain [min..max] (or of given size)."
   ([^Solver cp size] (Factory/makeIntVar cp (int size)))
   ([^Solver cp lo hi] (Factory/makeIntVar cp (int lo) (int hi))))
+
+;; Auto-start the UI companion server so http://localhost:3000 is ready on nREPL launch.
+(require '[prototype.server])
+(prototype.server/start!)
