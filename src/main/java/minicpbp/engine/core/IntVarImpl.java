@@ -72,6 +72,11 @@ public class IntVarImpl implements IntVar {
         public void changeMax() {
             scheduleAll(onBounds);
         }
+
+        @Override
+        public void op(DomainOpKind kind, int value) {
+            cp.notifyDomainOp(IntVarImpl.this, kind, value);
+        }
     };
 
     /**

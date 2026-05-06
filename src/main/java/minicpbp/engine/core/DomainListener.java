@@ -46,4 +46,16 @@ public interface DomainListener {
      * Called whenever the minmum value of the domain is lost.
      */
     void changeMax();
+
+    /**
+     * Called whenever a domain reduction actually shrinks the domain,
+     * carrying the mutator that produced the reduction and its argument.
+     * Fires after {@link #change()} (and the bound/bind callbacks where
+     * applicable). The default implementation is a no-op so existing
+     * listeners need not be modified.
+     *
+     * @param kind  which {@link IntVar} mutator produced the reduction
+     * @param value the integer argument that was passed to the mutator
+     */
+    default void op(DomainOpKind kind, int value) {}
 }

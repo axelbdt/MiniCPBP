@@ -38,6 +38,8 @@ public class MiniCP implements Solver {
     private Queue<Constraint> propagationQueue = new ArrayDeque<>();
     private List<Procedure> fixPointListeners = new LinkedList<>();
     private List<Procedure> beliefPropaListeners = new LinkedList<>();
+    private List<PropagateListener> propagateConstraintListeners = new LinkedList<>();
+    private List<DomainOpListener> domainOpListeners = new LinkedList<>();
 
     private final StateManager sm;
 
@@ -205,6 +207,24 @@ public class MiniCP implements Solver {
 
     private void notifyFixPoint() {
         fixPointListeners.forEach(s -> s.call());
+    }
+
+    @Override
+    public void onPropagateConstraint(PropagateListener listener) {
+        propagateConstraintListeners.add(listener);
+    }
+
+    @Override
+    public void onDomainOp(DomainOpListener listener) {
+        domainOpListeners.add(listener);
+    }
+
+    @Override
+    public void notifyDomainOp(IntVar x, DomainOpKind kind, int v) {
+        if (domainOpListeners.isEmpty()) return;
+        for (DomainOpListener l : domainOpListeners) {
+            l.onOp(x, kind, v);
+        }
     }
 
     @Override
@@ -594,8 +614,12 @@ public class MiniCP implements Solver {
     }
     private void propagate(Constraint c) {
         c.setScheduled(false);
-        if (c.isActive())
+        if (c.isActive()) {
+            for (PropagateListener l : propagateConstraintListeners) {
+                l.onPropagate(c);
+            }
             c.propagate();
+        }
     }
 
     @Override

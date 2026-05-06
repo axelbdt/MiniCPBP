@@ -206,6 +206,37 @@ public interface Solver {
     void onFixPoint(Procedure listener);
 
     /**
+     * Adds a listener called immediately before each constraint's
+     * {@link Constraint#propagate()} is invoked from inside the fixPoint loop.
+     *
+     * @param listener the listener that is called before each constraint
+     *                 propagation step
+     */
+    void onPropagateConstraint(PropagateListener listener);
+
+    /**
+     * Adds a listener called whenever a variable's domain is actually reduced
+     * by one of the {@link IntVar} mutators ({@link IntVar#remove(int)},
+     * {@link IntVar#assign(int)}, {@link IntVar#removeBelow(int)},
+     * {@link IntVar#removeAbove(int)}). Calls that have no effect on the
+     * domain do not fire this listener.
+     *
+     * @param listener the listener that is called on each domain reduction
+     */
+    void onDomainOp(DomainOpListener listener);
+
+    /**
+     * Engine-internal: invoked by {@link IntVar} implementations after a
+     * mutator call that actually reduced the domain. Notifies any listeners
+     * registered via {@link #onDomainOp(DomainOpListener)}.
+     *
+     * @param x    the variable whose domain was reduced
+     * @param kind the mutator that produced the reduction
+     * @param v    the integer argument passed to the mutator
+     */
+    void notifyDomainOp(IntVar x, DomainOpKind kind, int v);
+
+    /**
      * Registers the variable for belief propagation.
      *
      * @param x the variable
