@@ -1,108 +1,59 @@
 (ns prototype.trace
-  "Prototype tracer for MiniCPBP search. Subscribes to the listener mixin
-  on Search (DFSearch / LDSearch) and records branching/backtrack events
-  into an in-memory store so we can iterate on what the right frame
-  shapes are.
+  "Reader over minicpbp.util.TraceLog: enables in-memory trace recording on
+  the Java side, snapshots the frames, and adapts them to the idiomatic
+  Clojure shape the visualization expects (keywordized keys, keyword :t
+  values).
 
-  Throwaway by design: the schema discovered here ports to Java per
-  plan-prototype-workflow.md §7, then this namespace goes away."
-  (:import [minicpbp.search Search]
-           [minicpbp.util Procedure]
-           [java.util.concurrent.atomic AtomicLong]))
+  TraceLog is a static singleton — there's no per-run store to thread
+  through callers. Sequence:
+
+    (clear!)     ; reset frames
+    (enable!)    ; start recording
+    (.solve search)
+    (frames)     ; read"
+  (:require [clojure.walk :as walk])
+  (:import [minicpbp.util TraceLog]))
 
 (set! *warn-on-reflection* true)
 
 ;; ----------------------------------------------------------------------------
-;; Store
+;; Lifecycle
 
-(defn make-store
-  "Fresh trace store. One per search run."
-  []
-  {:frames (atom [])
-   :seq    (AtomicLong. 0)
-   :t0     (System/nanoTime)})
+(defn enable!  [] (TraceLog/enable))
+(defn disable! [] (TraceLog/disable))
+(defn enabled? [] (TraceLog/isEnabled))
+(defn clear!   [] (TraceLog/clear))
+
+;; ----------------------------------------------------------------------------
+;; Read
 
 (defn frames
-  "Snapshot of the recorded frames as a vector."
-  [store]
-  @(:frames store))
-
-(defn clear!
-  "Reset frames and sequence counter; t0 stays so timestamps remain comparable
-  across clears within one session if desired."
-  [store]
-  (reset! (:frames store) [])
-  (.set ^AtomicLong (:seq store) 0)
-  store)
-
-;; ----------------------------------------------------------------------------
-;; Emission
-
-(defn- emit!
-  [store frame]
-  (let [s  (.getAndIncrement ^AtomicLong (:seq store))
-        ts (- (System/nanoTime) ^long (:t0 store))]
-    (swap! (:frames store) conj (assoc frame :seq s :ts-ns ts))))
-
-(defn- node-ctx
-  [^Search s]
-  {:node   (.currentNodeId s)
-   :parent (.currentParentNodeId s)
-   :depth  (.currentDepth s)})
-
-(defn- branch-ctx
-  [^Search s]
-  (assoc (node-ctx s)
-         :index (.currentBranchIndex s)
-         :total (.currentBranchTotal s)))
-
-;; ----------------------------------------------------------------------------
-;; Listener installation
-;;
-;; Note: install-listeners! adds, never replaces. Calling it twice on the same
-;; Search will double up emissions. Build a fresh search per run, or call
-;; clear! on the store between runs and accept the redundant listeners.
-
-(defn install-listeners!
-  "Wire all six Search listeners to record events into `store`. Returns store."
-  [^Search search store]
-  (doto search
-    (.onNodeEnter
-     (reify Procedure
-       (call [_] (emit! store (assoc (node-ctx search)   :t :node-enter)))))
-    (.onBranch
-     (reify Procedure
-       (call [_] (emit! store (assoc (branch-ctx search) :t :branch-taken)))))
-    (.onBranchReturn
-     (reify Procedure
-       (call [_] (emit! store (assoc (branch-ctx search) :t :branch-return)))))
-    (.onFailure
-     (reify Procedure
-       (call [_] (emit! store (assoc (branch-ctx search) :t :failure)))))
-    (.onSolution
-     (reify Procedure
-       (call [_] (emit! store (assoc (node-ctx search)   :t :solution)))))
-    (.onNodeExit
-     (reify Procedure
-       (call [_] (emit! store (assoc (node-ctx search)   :t :node-exit))))))
-  store)
+  "Snapshot of TraceLog's frames. Java emits string keys and string :t values
+  (wire convention from plan-observability.md §4.2); we keywordize keys and
+  turn the :t value into a keyword so existing consumers can pattern-match
+  with `#{:solution :failure}` etc."
+  []
+  (->> (TraceLog/snapshot)
+       (mapv #(into {} %))
+       walk/keywordize-keys
+       (mapv #(update % :t keyword))))
 
 ;; ----------------------------------------------------------------------------
 ;; Inspection
 
 (defn summary
-  "Map of {event-type -> count}."
-  [store]
-  (frequencies (map :t (frames store))))
+  "Map of {event-type -> count} over the current TraceLog snapshot."
+  []
+  (frequencies (map :t (frames))))
 
 (defn inspect-frames
-  "Pretty-print frames. Options:
+  "Pretty-print the current TraceLog snapshot. Options:
      :types <set>  -- include only these :t values
      :head <n>     -- first n
      :tail <n>     -- last n"
-  ([store] (inspect-frames store nil))
-  ([store {:keys [types head tail]}]
-   (let [fs (cond->> (frames store)
+  ([] (inspect-frames nil))
+  ([{:keys [types head tail]}]
+   (let [fs (cond->> (frames)
               types (filter (comp types :t))
               head  (take head)
               tail  (take-last tail))]

@@ -5,7 +5,9 @@
 
   Workflow:
     (require '[prototype.examples.queens :as q] :reload)
-    (def store (q/run!))"
+    (q/run!)
+    (require '[prototype.trace :as t])
+    (t/summary)"
   (:refer-clojure :exclude [run!])
   (:require [prototype.trace :as t])
   (:import [minicpbp.cp BranchingScheme Factory]
@@ -38,37 +40,38 @@
       :vars q})))
 
 (defn run!
-  "Build a fresh n-queens search, install the tracer, solve all
-  solutions, return the store. Defaults to n=4."
+  "Build a fresh n-queens search, reset the TraceLog buffer, solve all
+  solutions, leave the trace in TraceLog for `prototype.trace/frames` to
+  read. Defaults to n=4. Returns the number of frames captured."
   ([] (run! 4))
   ([n]
-   (let [{:keys [^DFSearch search]} (build-search n)
-         store (t/make-store)]
-     (t/install-listeners! search store)
+   (let [{:keys [^DFSearch search]} (build-search n)]
+     (t/clear!)
+     (t/enable!)
      (.solve search)
-     store)))
+     (count (t/frames)))))
 
 (comment
 
   ;; one-shot demo
-  (def store (run!))
+  (run!)
 
-  (t/summary store)
+  (t/summary)
   ;; expected for n=4:
   ;;   2 solutions, ~17 nodes, ~13 failures (firstFail order).
-  ;;   exact counts will jiggle as we evolve the listener mixin,
+  ;;   exact counts will jiggle as we evolve the trace shape,
   ;;   re-baseline by running once.
 
   ;; full trace, all events
-  (t/inspect-frames store)
+  (t/inspect-frames)
 
   ;; just the decisions and the failures that follow
-  (t/inspect-frames store {:types #{:branch-taken :failure}})
+  (t/inspect-frames {:types #{:branch-taken :failure}})
 
   ;; only the leaves
-  (t/inspect-frames store {:types #{:solution}})
+  (t/inspect-frames {:types #{:solution}})
 
   ;; iterate: edit prototype/trace.clj, then
   (require 'prototype.trace :reload)
   (require 'prototype.examples.queens :reload)
-  (def store (run!)))
+  (run!))

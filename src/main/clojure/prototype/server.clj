@@ -11,12 +11,8 @@
 ;; ----------------------------------------------------------------------------
 ;; State
 
-(defonce current-store (atom nil))
 (defonce current-solver (atom nil))
 (defonce stop-fn (atom nil))
-
-(defn set-store! [store]
-  (reset! current-store store))
 
 ;; ----------------------------------------------------------------------------
 ;; Tree reconstruction
@@ -93,19 +89,18 @@
 (defn- handler [req]
   (case (:uri req)
     "/api/frames"
-    (json-response (if @current-store (t/frames @current-store) []))
+    (json-response (t/frames))
 
     "/api/tree"
-    (json-response (if @current-store (frames->tree (t/frames @current-store)) nil))
+    (json-response (frames->tree (t/frames)))
 
     "/api/run-queens"
     (let [n (or (some-> (get (parse-qs (:query-string req)) "n") parse-long) 4)]
       (try
-        (let [{:keys [search solver]} (queens/build-search n)
-              store (t/make-store)]
-          (t/install-listeners! search store)
+        (t/clear!)
+        (t/enable!)
+        (let [{:keys [search solver]} (queens/build-search n)]
           (.solve search)
-          (reset! current-store store)
           (reset! current-solver solver)
           (json-response {:status "ok" :n n}))
         (catch Exception e

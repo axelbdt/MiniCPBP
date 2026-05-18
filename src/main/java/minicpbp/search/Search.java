@@ -5,25 +5,28 @@ import java.util.List;
 import java.util.function.Predicate;
 
 import minicpbp.util.Procedure;
+import minicpbp.util.TraceLog;
 import minicpbp.engine.core.IntVar;
 
 /**
- * Common machinery for search strategies: listener registration, search-context
- * state (current node id, parent, depth, branch position), and the bookkeeping
- * helpers {@link #withinNode(Procedure)} and {@link #withinBranch(int, int, Procedure)}
- * that subclasses use to wrap their recursive search bodies.
+ * Common machinery for search strategies: solution / failure listener
+ * registration, search-context state (current node id, parent, depth, branch
+ * position), and the bookkeeping helpers {@link #withinNode(Procedure)} and
+ * {@link #withinBranch(int, int, Procedure)} that subclasses use to wrap
+ * their recursive search bodies.
  *
- * Subclasses (e.g. {@link DFSearch}, {@link LDSearch}) own the recursion structure
- * itself; this class owns the protocol used to observe it.
+ * Subclasses (e.g. {@link DFSearch}, {@link LDSearch}) own the recursion
+ * structure itself; this class owns the protocol used to observe it.
+ *
+ * Per-node / per-branch trace events are emitted directly to
+ * {@link TraceLog}; solution / failure events are emitted alongside the
+ * user-registered listeners in {@link #notifySolution()} and
+ * {@link #notifyFailure()}.
  */
 public abstract class Search {
 
-	protected final List<Procedure> solutionListeners       = new LinkedList<Procedure>();
-	protected final List<Procedure> failureListeners        = new LinkedList<Procedure>();
-	protected final List<Procedure> nodeEnterListeners      = new LinkedList<Procedure>();
-	protected final List<Procedure> nodeExitListeners       = new LinkedList<Procedure>();
-	protected final List<Procedure> branchListeners         = new LinkedList<Procedure>();
-	protected final List<Procedure> branchReturnListeners   = new LinkedList<Procedure>();
+	protected final List<Procedure> solutionListeners = new LinkedList<Procedure>();
+	protected final List<Procedure> failureListeners  = new LinkedList<Procedure>();
 
 	protected long nextNodeId          = 0;
 	protected long currentNodeId       = -1;
@@ -54,50 +57,6 @@ public abstract class Search {
 	}
 
 	/**
-	 * Adds a listener called on entry to each search node, after this node's
-	 * id, parent, and depth have been set but before the branching is queried.
-	 *
-	 * @param listener the closure to be called on each node entry
-	 */
-	public void onNodeEnter(Procedure listener) {
-		nodeEnterListeners.add(listener);
-	}
-
-	/**
-	 * Adds a listener called when a search node has been fully explored:
-	 * all of its branches have been tried, or it was a leaf (solution).
-	 * Not called when the search is cut short by the stop predicate.
-	 *
-	 * @param listener the closure to be called on each node exit
-	 */
-	public void onNodeExit(Procedure listener) {
-		nodeExitListeners.add(listener);
-	}
-
-	/**
-	 * Adds a listener called immediately before each branch procedure is
-	 * executed at the current node. {@link #currentBranchIndex()} and
-	 * {@link #currentBranchTotal()} reflect the branch about to run.
-	 *
-	 * @param listener the closure to be called before each branch
-	 */
-	public void onBranch(Procedure listener) {
-		branchListeners.add(listener);
-	}
-
-	/**
-	 * Adds a listener called after a branch procedure (and the recursive
-	 * search below it) has returned without throwing
-	 * {@link minicpbp.util.exception.InconsistencyException}. The
-	 * success-edge companion of {@link #onFailure(Procedure)}.
-	 *
-	 * @param listener the closure to be called after each successful branch
-	 */
-	public void onBranchReturn(Procedure listener) {
-		branchReturnListeners.add(listener);
-	}
-
-	/**
 	 * @return the id of the node currently being explored, or -1 outside the
 	 *         search. Node ids are monotonic and unique within this Search
 	 *         instance across calls to {@code solve()} and restart iterations.
@@ -124,9 +83,9 @@ public abstract class Search {
 
 	/**
 	 * @return the index of the branch currently being executed at the current
-	 *         node. Valid between {@link #onBranch(Procedure)} and the
-	 *         corresponding {@link #onBranchReturn(Procedure)} or
-	 *         {@link #onFailure(Procedure)}; undefined elsewhere.
+	 *         node. Valid between the {@code TraceLog.branch} emission and the
+	 *         matching {@code TraceLog.branchReturn} / failure; undefined
+	 *         elsewhere.
 	 */
 	public int currentBranchIndex() {
 		return currentBranchIndex;
@@ -141,36 +100,22 @@ public abstract class Search {
 	}
 
 	protected void notifySolution() {
+		TraceLog.solution(currentNodeId);
 		solutionListeners.forEach(Procedure::call);
 	}
 
 	protected void notifyFailure() {
+		TraceLog.failure(currentNodeId);
 		failureListeners.forEach(Procedure::call);
-	}
-
-	protected void notifyNodeEnter() {
-		nodeEnterListeners.forEach(Procedure::call);
-	}
-
-	protected void notifyNodeExit() {
-		nodeExitListeners.forEach(Procedure::call);
-	}
-
-	protected void notifyBranch() {
-		branchListeners.forEach(Procedure::call);
-	}
-
-	protected void notifyBranchReturn() {
-		branchReturnListeners.forEach(Procedure::call);
 	}
 
 	/**
 	 * Runs {@code body} as the exploration of one search node: assigns this
-	 * node a fresh id, records the parent and depth, fires
-	 * {@link #notifyNodeEnter()} before and {@link #notifyNodeExit()} after.
-	 * The previous context is restored on exit, including when {@code body}
-	 * throws (so a {@link StopSearchException} or other escape does not leak
-	 * stale state into the next root).
+	 * node a fresh id, records the parent and depth, emits a node-enter trace
+	 * frame before and a node-exit trace frame after. The previous context is
+	 * restored on exit, including when {@code body} throws (so a
+	 * {@link StopSearchException} or other escape does not leak stale state
+	 * into the next root).
 	 */
 	protected void withinNode(Procedure body) {
 		long savedNodeId       = currentNodeId;
@@ -180,9 +125,9 @@ public abstract class Search {
 		currentNodeId       = nextNodeId++;
 		currentDepth        = savedDepth + 1;
 		try {
-			notifyNodeEnter();
+			TraceLog.nodeEnter(currentNodeId, currentParentNodeId, currentDepth);
 			body.call();
-			notifyNodeExit();
+			TraceLog.nodeExit(currentNodeId, currentParentNodeId, currentDepth);
 		} finally {
 			currentNodeId       = savedNodeId;
 			currentParentNodeId = savedParentNodeId;
@@ -193,19 +138,19 @@ public abstract class Search {
 	/**
 	 * Runs {@code body} as the exploration of one branch from the current
 	 * node. Sets {@link #currentBranchIndex()} / {@link #currentBranchTotal()},
-	 * fires {@link #notifyBranch()} before, and fires
-	 * {@link #notifyBranchReturn()} only if {@code body} returns normally
-	 * (an exception propagates out and is the caller's responsibility — this
-	 * is how the failure edge stays the caller's catch block).
+	 * emits a branch-taken trace frame before, and emits a branch-return frame
+	 * only if {@code body} returns normally (an exception propagates out and
+	 * is the caller's responsibility — this is how the failure edge stays the
+	 * caller's catch block).
 	 */
 	protected void withinBranch(int branchIndex, int branchTotal, Procedure body) {
 		currentBranchIndex = branchIndex;
 		currentBranchTotal = branchTotal;
-		notifyBranch();
+		TraceLog.branch(currentNodeId, currentBranchIndex, currentBranchTotal);
 		body.call();
 		currentBranchIndex = branchIndex;
 		currentBranchTotal = branchTotal;
-		notifyBranchReturn();
+		TraceLog.branchReturn(currentNodeId, currentBranchIndex, currentBranchTotal);
 	}
 
 	public abstract SearchStatistics solve(Predicate<SearchStatistics> limit);
