@@ -22,8 +22,14 @@ import minicpbp.util.Log;
 
 import minicpbp.engine.core.AbstractConstraint;
 import minicpbp.engine.core.IntVar;
+import minicpbp.util.AllDiffConfig;
+import minicpbp.util.AllDiffStats;
+import minicpbp.util.AssignmentBP;
+import minicpbp.util.BeliefMatrixHarvester;
 import minicpbp.util.GraphUtil;
 import minicpbp.util.GraphUtil.Graph;
+import minicpbp.util.Permanent;
+import minicpbp.util.SoulesUB3;
 import minicpbp.state.StateSparseSet;
 import minicpbp.util.exception.InconsistencyException;
 
@@ -75,16 +81,20 @@ public class AllDifferentDC extends AbstractConstraint {
     private int maxVal;
 
     private static final int exactPermanentThreshold = 6;
+    // Experiment (2026-08-16): alternative counting routines, selected by
+    // AllDiffConfig. All default to the pre-existing behaviour.
+    private Permanent.DpWorkspace dpWorkspace; // subset-DP scratch, allocated on demand
+    private AssignmentBP bp;                   // Williams & Lau single-scan BP
+    private double[][] minors;                 // all-minors output buffer
+    private long prevBpClamps, prevBpCancels, prevBpNonFinite; // for delta accounting
     private double[][] beliefs;
     private StateSparseSet freeVars; // holds an index for vars
     private StateSparseSet freeVals; // holds the actual values of freeVals
-    private double[] gamma;
+    private SoulesUB3 soules;
     private int[] c;
     private int[] permutation;
     private int[] varIndices;
     private int[] vals;
-    private double[] rowMax;
-    private double[] rowMaxSecondBest;
 
     public AllDifferentDC(IntVar... x) {
         super(x[0].getSolver(), x);
@@ -136,14 +146,33 @@ public class AllDifferentDC extends AbstractConstraint {
         permutation = new int[freeVals.size()];
         varIndices = new int[freeVars.size()];
         vals = new int[freeVals.size()];
-        rowMax = new double[freeVals.size()];
-        rowMaxSecondBest = new double[freeVals.size()];
-        if (freeVals.size() - 1 <= exactPermanentThreshold) {
+        if (freeVals.size() <= AllDiffConfig.EXACT_MAX_DIM) {
             setExactWCounting(true);
         } else {
             setExactWCounting(false); // actually, it will be exact below the threshold, which may happen lower in the search tree
         }
-        precompute_gamma(freeVals.size());
+        soules = new SoulesUB3(freeVals.size());
+        setupExperimentRoutines();
+    }
+
+    /**
+     * Allocates the scratch space needed by the experimental counting routines
+     * (see IMPLEMENTATION_LOG.md, 2026-08-16). Nothing is allocated for the
+     * default configuration (Heap + Soules).
+     */
+    private void setupExperimentRoutines() {
+        AllDiffStats.install();
+        int dim = freeVals.size();
+        if (AllDiffConfig.EXACT != AllDiffConfig.ExactRoutine.HEAP) {
+            int maxDim = Math.min(dim, AllDiffConfig.EXACT_MAX_DIM);
+            if (AllDiffConfig.EXACT == AllDiffConfig.ExactRoutine.DP && maxDim >= 1)
+                dpWorkspace = new Permanent.DpWorkspace(Math.min(maxDim, 24));
+            minors = new double[dim][dim];
+        }
+        if (AllDiffConfig.APPROX == AllDiffConfig.ApproxRoutine.BP) {
+            bp = new AssignmentBP(dim, dim);
+            if (minors == null) minors = new double[dim][dim];
+        }
     }
 
     @Override
@@ -297,25 +326,49 @@ public class AllDifferentDC extends AbstractConstraint {
                 beliefs[nbVar + j][k] = 1.0 / nbVal; // (STANDARD REPRESENTATION)
             }
         }
+        // optional instrumentation: sample the matrix that the counters see
+        if (AllDiffConfig.harvesting())
+            BeliefMatrixHarvester.offer(beliefs, nbVar, nbVal, getName());
+
+        AllDiffStats.updateBeliefCalls++;
         // set local beliefs by computing the permanent of beliefs sub-matrices
-        if (nbVal - 1 <= exactPermanentThreshold) {
+        if (nbVal <= AllDiffConfig.EXACT_MAX_DIM) {
             // exact permanent
+            AllDiffStats.exactCalls++;
             setExactWCounting(true);
-            for (int j = 0; j < nbVar; j++) {
-                int i = varIndices[j];
-                for (int k = 0; k < nbVal; k++) {
-                    int val = vals[k];
-                    if (x[i].contains(val)) {
-                        // note: will be normalized later in AbstractConstraint.sendMessages()
-                        // put beliefs back to their original representation
-                        setLocalBelief(i, val, beliefRep.std2rep(costBasedPermanent_exact(j, k, nbVal)));
+            switch (AllDiffConfig.EXACT) {
+                case HEAP:
+                    for (int j = 0; j < nbVar; j++) {
+                        int i = varIndices[j];
+                        for (int k = 0; k < nbVal; k++) {
+                            int val = vals[k];
+                            if (x[i].contains(val)) {
+                                // note: will be normalized later in AbstractConstraint.sendMessages()
+                                // put beliefs back to their original representation
+                                setLocalBelief(i, val, beliefRep.std2rep(costBasedPermanent_exact(j, k, nbVal)));
+                            }
+                        }
                     }
-                }
+                    break;
+                case DP:
+                    Permanent.dpAllMinors(beliefs, nbVar, nbVal, 1.0 / nbVal, minors, dpWorkspace);
+                    emitMinors(nbVar, nbVal);
+                    break;
+                case RYSER:
+                    Permanent.ryserAllMinors(beliefs, nbVar, nbVal, 1.0 / nbVal, minors);
+                    emitMinors(nbVar, nbVal);
+                    break;
             }
         } else {
             // approximate permanent
             setExactWCounting(false);
-            costBasedPermanent_UB3_precomputeRowMax(nbVal);
+            AllDiffStats.approxCalls++;
+            if (AllDiffConfig.APPROX == AllDiffConfig.ApproxRoutine.BP) {
+                if (updateBeliefBP(nbVar, nbVal)) return;
+                // BP was rejected; fall through to Soules
+            }
+            AllDiffStats.soulesCalls++;
+            soules.precomputeRowMax(beliefs, nbVal);
             for (int j = 0; j < nbVar; j++) {
                 int i = varIndices[j];
                 for (int k = 0; k < nbVal; k++) {
@@ -323,12 +376,87 @@ public class AllDifferentDC extends AbstractConstraint {
                     if (x[i].contains(val)) {
                         // note: will be normalized later in AbstractConstraint.sendMessages()
                         // put beliefs back to their original representation
-                        setLocalBelief(i, val, beliefRep.std2rep(costBasedPermanent_UB3_faster(j, k, nbVal, nbVal - nbVar)));
-  //                      setLocalBelief(i, val, beliefRep.std2rep(costBasedPermanent_UB3(j, k, beliefs, nbVal, nbVal - nbVar)));
+                        setLocalBelief(i, val, beliefRep.std2rep(soules.ub3Faster(beliefs, j, k, nbVal, nbVal - nbVar)));
+  //                      setLocalBelief(i, val, beliefRep.std2rep(soules.ub3(beliefs, j, k, nbVal, nbVal - nbVar)));
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Pushes the all-minors matrix computed by Ryser / subset DP into the
+     * local beliefs, for the value pairs still in the domains.
+     */
+    private void emitMinors(int nbVar, int nbVal) {
+        for (int j = 0; j < nbVar; j++) {
+            int i = varIndices[j];
+            for (int k = 0; k < nbVal; k++) {
+                int val = vals[k];
+                if (x[i].contains(val)) {
+                    double v = minors[j][k];
+                    if (v < 0) v = 0; // Ryser's inclusion-exclusion can undershoot zero by rounding
+                    setLocalBelief(i, val, beliefRep.std2rep(v));
+                }
+            }
+        }
+    }
+
+    /**
+     * Approximate counting by loopy BP on the assignment factor graph
+     * (Williams &amp; Lau 2014, single scan). The messages nu_{j->i} it returns
+     * stand in for perm(A^{ij}); see AssignmentBP for why that, and not the
+     * marginal, is what setLocalBelief() expects.
+     *
+     * @return true if the BP estimate was accepted, false if the caller should
+     * fall back to Soules U^3
+     */
+    private boolean updateBeliefBP(int nbVar, int nbVal) {
+        AllDiffStats.bpCalls++;
+        long iterBefore = bp.nbIterations();
+        // A non-positive configured cap means "adapt to the matrix": Phase 1
+        // shows the tau-maximising number of iterations grows with nbVal
+        // (5 at nbVal 8-10, 10-20 at 11-14, 20+ beyond).
+        int iters = AllDiffConfig.BP_ITERS > 0
+                ? AllDiffConfig.BP_ITERS
+                : Math.max(2, Math.min(20, nbVal / 2));
+        boolean converged = bp.run(beliefs, nbVar, nbVal, iters, AllDiffConfig.BP_TOL, minors);
+        AllDiffStats.bpIterations += bp.nbIterations() - iterBefore;
+        AllDiffStats.bpEdges += bp.nbEdges();
+        AllDiffStats.bpClamps += bp.nbClamps() - prevBpClamps;
+        prevBpClamps = bp.nbClamps();
+        AllDiffStats.bpCancelRecomputes += bp.nbCancelRecomputes() - prevBpCancels;
+        prevBpCancels = bp.nbCancelRecomputes();
+        AllDiffStats.bpNonFinite += bp.nbNonFinite() - prevBpNonFinite;
+        prevBpNonFinite = bp.nbNonFinite();
+        if (converged) AllDiffStats.bpConverged++;
+        if (!AllDiffConfig.BP_WARM_START) bp.invalidateWarmStart();
+
+        // sanity: every free row must keep at least one finite positive message
+        for (int j = 0; j < nbVar; j++) {
+            boolean anyPositive = false;
+            for (int k = 0; k < nbVal; k++) {
+                double v = minors[j][k];
+                if (Double.isNaN(v) || Double.isInfinite(v) || v < 0) {
+                    AllDiffStats.bpFallbacks++;
+                    return false;
+                }
+                if (v > 0) anyPositive = true;
+            }
+            if (!anyPositive) {
+                AllDiffStats.bpFallbacks++;
+                return false;
+            }
+        }
+        for (int j = 0; j < nbVar; j++) {
+            int i = varIndices[j];
+            for (int k = 0; k < nbVal; k++) {
+                int val = vals[k];
+                if (x[i].contains(val))
+                    setLocalBelief(i, val, beliefRep.std2rep(minors[j][k]));
+            }
+        }
+        return true;
     }
 
     @Override
@@ -376,157 +504,22 @@ public class AllDifferentDC extends AbstractConstraint {
         } else {
             // approximate permanent
             setExactWCounting(false);
-            weightedCount *= costBasedPermanent_UB3(-1, -1, nbVal, nbVal - nbVar);
+            // NOTE (2026-08-16): weightedCounting() deliberately stays on Soules U^3
+            // even when updateBelief() runs BP -- see IMPLEMENTATION_LOG.md.
+            weightedCount *= soules.ub3(beliefs, -1, -1, nbVal, nbVal - nbVar);
         }
         Log.constraint("weighted count for "+this.getName()+" constraint: "+beliefRep.std2rep(weightedCount));
         return beliefRep.std2rep(weightedCount); // put beliefs back to their original representation
     }
 
-    // precompute gamma function up to n+1, to account for small floating-point errors
-    private void precompute_gamma(int n) {
-        int gamma_threshold = 100; // value of n beyond which we approximate n!
-        double factorial = 1.0;
-        gamma = new double[n + 2];
-        gamma[0] = 1.0;
-        for (int i = 1; (i <= n + 1) && (i <= gamma_threshold); i++) {
-            factorial *= (double) i;
-            gamma[i] = Math.pow(factorial, 1.0 / ((double) i));
-        }
-        for (int i = gamma_threshold + 1; i <= n + 1; i++) {
-            // from n>gamma_threshold, Stirling's formula is a decent approximation of factorial which will avoid intermediate overflow
-            gamma[i] = (double) i / Math.E * Math.pow(2 * Math.PI * i, 1.0 / ((double) 2 * i));
-        }
-    }
-
-    private double costBasedPermanent_UB3(int var, int val, int dim, int nbDummyRows) {
-        // permanent upper bound U^3 for nonnegative matrices (from Soules 2003)
-        // for matrix m without row of var and column of val
-        double U3 = 1.0;
-        double rowSum, rowMax, tmp;
-        int tmpFloor, tmpCeil;
-        int dummyRowCount = nbDummyRows;
-
-        for (int i = 0; i < dim; i++) {
-            if (i != var) { // exclude row of var whose belief we are computing
-                rowSum = rowMax = 0;
-                for (int j = 0; j < dim; j++) {
-                    tmp = beliefs[i][j];
-                    if (j != val) { // exclude column of val whose belief we are computing
-                        rowSum += tmp;
-                        if (tmp > rowMax)
-                            rowMax = tmp;
-                    }
-                }
-                if (rowMax == 0)
-                    return 0;
-                tmp = rowSum / rowMax;
-                tmpFloor = (int) Math.floor(tmp);
-                tmpCeil = (int) Math.ceil(tmp);
-                U3 *= rowMax * (gamma[tmpFloor] + (tmp - tmpFloor) * (gamma[tmpCeil] - gamma[tmpFloor]));
-                if (dummyRowCount > 1) {
-                    // that upper bound should be divided by (# dummy rows)!
-                    U3 /= (double) dummyRowCount;
-                    dummyRowCount--;
-                }
-            }
-        }
-        return U3;
-    }
-
-   private void costBasedPermanent_UB3_precomputeRowMax(int dim) {
-        double tmp;
-        for (int i = 0; i < dim; i++) {
-            rowMax[i] = rowMaxSecondBest[i] = 0;
-            for (int j = 0; j < dim; j++) {
-                tmp = beliefs[i][j];
-                if (tmp > rowMax[i]) {
-                    rowMaxSecondBest[i] = rowMax[i];
-                    rowMax[i] = tmp;
-                }
-                else if (tmp > rowMaxSecondBest[i]) {
-                    rowMaxSecondBest[i] = tmp;
-                }
-            }
-        }
-    }
-    private void costBasedPermanent_UB3_precomputeRowMax_sparseMatrix(int dim) {
-        double tmp;
-        for (int i = 0; i < dim; i++) {
-            rowMax[i] = rowMaxSecondBest[i] = 0;
-            int var = varIndices[i];
-            int s = x[var].fillArray(domainValues);
-            for (int k = 0; k < s; k++) {
-                tmp = beliefRep.rep2std(outsideBelief(var, domainValues[k]));
-                if (tmp > rowMax[i]) {
-                    rowMaxSecondBest[i] = rowMax[i];
-                    rowMax[i] = tmp;
-                }
-                else if (tmp > rowMaxSecondBest[i]) {
-                    rowMaxSecondBest[i] = tmp;
-                }
-            }
-        }
-    }
-    private double costBasedPermanent_UB3_faster(int var, int val, int dim, int nbDummyRows) {
-        // permanent upper bound U^3 for nonnegative matrices (from Soules 2003)
-        // for matrix m without row of var and column of val
-        // assumes that each row of m sums to one
-        double U3 = 1.0;
-        double rSum, rMax, tmp;
-        int tmpFloor, tmpCeil;
-        int dummyRowCount = nbDummyRows;
-
-        for (int i = 0; i < dim; i++) {
-            if (i != var) { // exclude row of var whose belief we are computing
-                rSum = 1.0 - beliefs[i][val]; // each row of m (beliefs) sums to one
-                rMax = (rowMax[i]==beliefs[i][val]? rowMaxSecondBest[i] : rowMax[i]);
-                if (rMax == 0)
-                    return 0;
-                tmp = rSum / rMax;
-                tmpFloor = (int) Math.floor(tmp);
-                tmpCeil = (int) Math.ceil(tmp);
-                U3 *= rMax * (gamma[tmpFloor] + (tmp - tmpFloor) * (gamma[tmpCeil] - gamma[tmpFloor]));
-                if (dummyRowCount > 1) {
-                    // that upper bound should be divided by (# dummy rows)!
-                    U3 /= dummyRowCount;
-                    dummyRowCount--;
-                }
-            }
-        }
-        return U3;
-    }
-
-    private double costBasedPermanent_UB3_faster_sparseMatrix(int var, int val, int dim) {
-        // permanent upper bound U^3 for nonnegative matrices (from Soules 2003)
-        // for matrix m without row of var and column of val
-        // assumes that each row of m sums to one
-        double U3 = 1.0;
-        double rSum, rMax, tmp;
-        int tmpFloor, tmpCeil;
-
-        for (int i = 0; i < dim; i++) {
-            if (i != var) { // exclude row of var whose belief we are computing
-                int j = varIndices[i];
-                if (x[j].contains(val)) {
-                    tmp = beliefRep.rep2std(outsideBelief(j, val));
-                    rSum = 1.0 - tmp; // each row of m (beliefs) sums to one
-                    rMax = (rowMax[i] == tmp ? rowMaxSecondBest[i] : rowMax[i]);
-                }
-                else {
-                    rSum = 1.0;
-                    rMax = rowMax[i];
-                }
-//                Log.constraint(var+" "+val+"; "+rSum+" " + rMax);
-                if (rMax == 0)
-                    return 0;
-                tmp = rSum / rMax;
-                tmpFloor = (int) Math.floor(tmp);
-                tmpCeil = (int) Math.ceil(tmp);
-                U3 *= rMax * (gamma[tmpFloor] + (tmp - tmpFloor) * (gamma[tmpCeil] - gamma[tmpFloor]));
-            }
-        }
-        return U3;
-    }
+    /*
+     * The Soules U^3 routines that used to live here (precompute_gamma,
+     * costBasedPermanent_UB3, costBasedPermanent_UB3_precomputeRowMax,
+     * costBasedPermanent_UB3_faster) moved verbatim to minicpbp.util.SoulesUB3
+     * on 2026-08-16 so the offline Phase 1 comparison and the solver share one
+     * implementation. The abandoned *_sparseMatrix variants were dropped with
+     * them; their only call site was already commented out in updateBelief().
+     */
 
     private double costBasedPermanent_exact(int var, int val, int dim) {
         // exact permanent for matrix m without row of var and column of val
