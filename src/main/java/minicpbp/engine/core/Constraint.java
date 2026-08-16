@@ -114,6 +114,11 @@ public interface Constraint {
     double weight();
 
     /**
+     * @return the variables in the scope of the constraint
+     */
+    IntVar[] getScope();
+
+    /**
      * @return the constraint's arity
      */
     int arity();

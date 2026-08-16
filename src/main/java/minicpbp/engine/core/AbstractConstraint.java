@@ -93,6 +93,10 @@ public abstract class AbstractConstraint implements Constraint {
         failureCount = 0;
     }
 
+    public IntVar[] getScope() {
+        return vars;
+    }
+
     public int arity() {
         return vars.length;
     }
