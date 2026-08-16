@@ -2220,8 +2220,13 @@ public class XCSP implements XCallbacks2 {
 		*/
 
 		/* */
-		// possibly too complicated for nothing...
-		IntVar[] vars = mapVar.entrySet().stream().map(Map.Entry::getValue).toArray(IntVar[]::new);
+		// 2026-08-16: mapVar is a HashMap keyed by XVarInteger, whose hashCode is
+		// the identity hash, so the branching order used to change from one JVM to
+		// the next and node counts were not reproducible. Sorting by variable id
+		// makes a run depend only on the model and the heuristic, which is what a
+		// paired comparison of counting routines needs. See IMPLEMENTATION_LOG.md.
+		IntVar[] vars = mapVar.entrySet().stream().sorted(new EntryComparator())
+				.map(Map.Entry::getValue).toArray(IntVar[]::new);
 		/* */
 
 		/*
