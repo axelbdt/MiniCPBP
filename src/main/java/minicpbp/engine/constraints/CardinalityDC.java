@@ -34,6 +34,7 @@ import minicpbp.util.GccBeliefHarvester;
 import minicpbp.util.GccConfig;
 import minicpbp.util.GraphUtil;
 import minicpbp.util.LoBiancoBound;
+import minicpbp.util.SelfRefOracle;
 import minicpbp.util.GraphUtil.Graph;
 import minicpbp.util.exception.InconsistencyException;
 
@@ -97,12 +98,16 @@ public class CardinalityDC extends AbstractConstraint {
     private CountVectorDP dp;
     private GccBP bp;
     private LoBiancoBound lobianco;
+    private SelfRefOracle selfDp;
     /**
      * True when some occurrence variable IS one of the x variables (e.g. the
-     * magic-sequence gcc). The counting routines treat x and o as disjoint,
-     * which is then a relaxation: messages remain usable for ranking and a
-     * zero stays sound for pruning (relaxation-zero implies true-zero), but
-     * the count is not exact, so exactness is never claimed.
+     * magic-sequence gcc). CountVectorDP/GccBP/LoBiancoBound treat x and o as
+     * disjoint, which is then a relaxation: messages remain usable for
+     * ranking and a zero stays sound for pruning (relaxation-zero implies
+     * true-zero), but the count is not exact. Since round 3 (2026-08-18) the
+     * exact/auto routines use SelfRefOracle on such systems — the true
+     * count-vector DP enforcing x_i = c_j — and exactness IS claimed there,
+     * guarded by selfExactApplicable().
      */
     private final boolean selfReferential;
     /** selfIdx[j] = i if o[j] IS x[i], else -1 (harvested for the true oracle). */
@@ -173,6 +178,23 @@ public class CardinalityDC extends AbstractConstraint {
                 if (o[j] == x[i]) { selfIdx[j] = i; selfRef = true; break; }
         selfReferential = selfRef;
         setExactWCounting(false); // refined per call in updateBelief()
+    }
+
+    /**
+     * The true self-referential DP may claim exactness only when every self
+     * owner's belief mass lies entirely on tracked classes (b[i] == 0): a
+     * forced count value outside the tracked classes is then genuinely
+     * infeasible for that variable. With b[i] > 0 the owner could take an
+     * untracked value equal to its count, whose individual weight the
+     * class-collapsed system cannot recover — the DP would under-count and a
+     * zero could prune a true support.
+     */
+    private boolean selfExactApplicable() {
+        for (int j = 0; j < k; j++) {
+            int i = selfIdx[j];
+            if (i >= 0 && b[i] != 0.0) return false;
+        }
+        return true;
     }
 
     private static IntVar[] scope(IntVar[] x, IntVar[] o) {
@@ -415,16 +437,32 @@ public class CardinalityDC extends AbstractConstraint {
         }
 
         boolean exact = false;
+        boolean trueExact = false; // exact for the FULL constraint (incl. self-reference)
         long states = CountVectorDP.stateCount(up, GccConfig.MAX_STATES);
         boolean withinBudget = states > 0
                 && (routine == GccConfig.BeliefRoutine.EXACT   // EXACT: memory cap only
                     || states * (k + 1) * (long) n <= GccConfig.OPS_BUDGET); // AUTO: ops budget
         if ((routine == GccConfig.BeliefRoutine.EXACT || routine == GccConfig.BeliefRoutine.AUTO)
                 && withinBudget) {
-            if (dp == null) dp = new CountVectorDP(GccConfig.MAX_STATES);
             for (int j = 0; j < k; j++) java.util.Arrays.fill(msgOcc[j], 0, up[j] + 1, 0.0);
-            double z = dp.run(n, k, a, b, low, up, wOcc, msg, msgOcc);
-            exact = z >= 0;
+            if (selfReferential && selfExactApplicable()) {
+                // Round 3 (2026-08-18): the TRUE self-referential count-vector
+                // DP — enforces x_i = c_j when o_j IS x_i — at the same
+                // O(n·S·k) cost as the relaxed DP. Sound to claim exactness
+                // only under selfExactApplicable() (every self owner's domain
+                // fully tracked: a forced count value outside the tracked
+                // classes then really is infeasible, never an aggregated
+                // "other" value the DP cannot weight). See SelfRefOracle.
+                if (selfDp == null) selfDp = new SelfRefOracle(GccConfig.MAX_STATES);
+                double z = selfDp.run(n, k, a, b, low, up, wOcc, vals, selfIdx, msg, msgOcc);
+                exact = z >= 0;
+                trueExact = exact;
+            } else {
+                if (dp == null) dp = new CountVectorDP(GccConfig.MAX_STATES);
+                double z = dp.run(n, k, a, b, low, up, wOcc, msg, msgOcc);
+                exact = z >= 0;
+                trueExact = exact && !selfReferential;
+            }
         }
         if (!exact) {
             if (bp == null) bp = new GccBP();
@@ -434,7 +472,7 @@ public class CardinalityDC extends AbstractConstraint {
                 return;
             }
         }
-        setExactWCounting(exact && !selfReferential);
+        setExactWCounting(trueExact);
         // ---- emit messages for x ----
         for (int i = 0; i < n; i++) {
             int s = x[i].fillArray(domainValues);
