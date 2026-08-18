@@ -1857,6 +1857,12 @@ public final class Factory {
      */
     public static Constraint cardinality(IntVar[] x, int[] vals, IntVar[] o) {
         assert (vals.length == o.length);
+        // gcc experiment (2026-08-18, GCC_EXPERIMENT.md): optionally post the
+        // flow-based DC constraint instead of the decomposition. Default is
+        // the pre-existing decomposition, bit for bit.
+        if (minicpbp.util.GccConfig.POST == minicpbp.util.GccConfig.Post.REGIN) {
+            return new CardinalityDC(x, vals, o);
+        }
         int maxDomainSize = 0;
         for (int i = 0; i < x.length; i++) {
             maxDomainSize = Math.max(maxDomainSize, x[i].size());
@@ -1869,14 +1875,17 @@ public final class Factory {
      */
     public static Constraint cardinality(IntVar[] x, int[] vals, int[] o) {
         assert (vals.length == o.length);
-        int maxDomainSize = 0;
-        for (int i = 0; i < x.length; i++) {
-            maxDomainSize = Math.max(maxDomainSize, x[i].size());
-        }
         IntVar[] oVar = new IntVar[o.length];
         Solver cp = x[0].getSolver();
         for (int i = 0; i < o.length; i++) {
             oVar[i] = makeIntVar(cp, o[i], o[i]);
+        }
+        if (minicpbp.util.GccConfig.POST == minicpbp.util.GccConfig.Post.REGIN) {
+            return new CardinalityDC(x, vals, oVar);
+        }
+        int maxDomainSize = 0;
+        for (int i = 0; i < x.length; i++) {
+            maxDomainSize = Math.max(maxDomainSize, x[i].size());
         }
         return new Cardinality(x, vals, oVar, makeIntVar(cp, 1, maxDomainSize));
     }
@@ -1906,6 +1915,9 @@ public final class Factory {
 		for (int i = 0; i < n; i++)
 			oVar[i] = makeIntVar(cp, oMin[i], oMax[i]);
 
+		if (minicpbp.util.GccConfig.POST == minicpbp.util.GccConfig.Post.REGIN) {
+			return new CardinalityDC(x, vals, oVar);
+		}
 		return new Cardinality(x, vals, oVar, makeIntVar(cp,1,maxDomainSize));
 	}
 
