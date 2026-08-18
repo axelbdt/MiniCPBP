@@ -2023,6 +2023,35 @@ public final class Factory {
     }
 
     /**
+     * Returns a tree constraint over the successor encoding (round 5,
+     * TREE_EXPERIMENT.md): succ[i] = j means i's parent is j, succ[i] = i
+     * means i is a root; solutions are forests of anti-arborescences with
+     * exactly ntrees roots. Exact regime-2 weighted counting (directed
+     * Matrix-Tree / Matrix-Forest determinant) selectable via
+     * -Dminicpbp.tree.belief (default exact).
+     *
+     * @param succ   the successor variable of each node
+     * @param ntrees the number of trees in the forest
+     * @return a tree constraint
+     */
+    public static Constraint tree(IntVar[] succ, IntVar ntrees) {
+        return new Tree(succ, ntrees);
+    }
+
+    /**
+     * Single-arborescence variant of {@link #tree(IntVar[], IntVar)}: the
+     * root is fixed, every solution is one spanning anti-arborescence
+     * toward it.
+     *
+     * @param succ the successor variable of each node
+     * @param root the fixed root node
+     * @return a tree constraint with ntrees bound to 1
+     */
+    public static Constraint tree(IntVar[] succ, int root) {
+        return new Tree(succ, makeIntVar(succ[0].getSolver(), 1, 1), root);
+    }
+
+    /**
      * Returns a bin packing constraint.
      * @param b    the bin into which each item is put
      * @param size the size of each item
