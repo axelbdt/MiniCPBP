@@ -2030,6 +2030,13 @@ public final class Factory {
      * @return
      */
     public static Constraint binPacking(IntVar[] b, int[] size, IntVar[] l) {
+        // bin_packing counting experiment (round 4, BINPACKING_EXPERIMENT.md):
+        // -Dminicpbp.binpacking.post=counting posts the dedicated
+        // filtering+counting constraint; the default is the shipped sum
+        // decomposition, bit for bit.
+        if (minicpbp.util.BinPackingConfig.POST == minicpbp.util.BinPackingConfig.Post.COUNTING) {
+            return new BinPackingCounting(b, size, l);
+        }
         IntVar[] vars = Arrays.copyOf(b, b.length + l.length);
         for (int i = 0; i < l.length; i++) {
             vars[b.length + i] = l[i];
