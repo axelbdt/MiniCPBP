@@ -46,12 +46,20 @@ public class BoolVarViewNot implements BoolVar {
 
     @Override
     public boolean isTrue() {
-        return max() == 0;
+        // 2026-08-18 fix: was `max() == 0`, i.e. the test for FALSE.
+        // min()/max() of this view already negate the underlying variable
+        // (min = 1 - x.max), so the truth tests must be the standard ones
+        // (BoolVarImpl convention: isTrue <=> min() == 1). The swapped pair
+        // made Or() treat a not-view literal as its complement, silently
+        // producing wrong SAT/UNSAT answers (found via notAllEqual on
+        // RamseyPartition: 21 instead of 24 solutions on a 3x{0..2} check).
+        return min() == 1;
     }
 
     @Override
     public boolean isFalse() {
-        return min() == 1;
+        // 2026-08-18 fix: was `min() == 1` (the test for TRUE); see isTrue().
+        return max() == 0;
     }
 
     @Override

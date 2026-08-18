@@ -221,7 +221,8 @@ public abstract class AbstractConstraint implements Constraint {
         for (int j = 0; j < s; j++) {
             int val = domainValues[j];
             f2.set(i, val, beliefRep.divide(f1.get(i, val), normalizingConstant));
-            assert f1.get(i, val) <= beliefRep.one() && f1.get(i, val) >= beliefRep.zero() : "c Should be normalized! f1.get(i,val) = " + f1.get(i, val);
+            assert f1.get(i, val) <= beliefRep.one() && f1.get(i, val) >= beliefRep.zero() : "c Should be normalized! f1.get(i,val) = " + f1.get(i, val)
+                    + " (constraint " + getName() + ", var " + vars[i].getName() + ", val " + val + ", normalizingConstant " + normalizingConstant + ")";
         }
     }
 

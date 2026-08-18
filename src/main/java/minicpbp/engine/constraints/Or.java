@@ -35,6 +35,13 @@ public class Or extends AbstractConstraint { // x1 or x2 or ... xn
     private final int n;
     private StateInt wL; // watched literal left
     private StateInt wR; // watched literal right
+    // prefix/suffix products of outsideBelief(i, 0) for leave-one-out in
+    // updateBelief(): computing them by DIVIDING the full product is 0/0 =
+    // NaN whenever an unbound literal has zero outside mass on false
+    // (observed on RamseyPartition via buildCtrNotAllEqual, 2026-08-18);
+    // same division-is-not-sum-product lesson as Maximum.
+    private double[] prefixFalse;
+    private double[] suffixFalse;
 
 
     /**
@@ -50,6 +57,8 @@ public class Or extends AbstractConstraint { // x1 or x2 or ... xn
         this.n = x.length;
         wL = getSolver().getStateManager().makeStateInt(0);
         wR = getSolver().getStateManager().makeStateInt(n - 1);
+        prefixFalse = new double[n + 1];
+        suffixFalse = new double[n + 1];
         setExactWCounting(true);
     }
 
@@ -103,16 +112,22 @@ public class Or extends AbstractConstraint { // x1 or x2 or ... xn
 
     @Override
     public void updateBelief() {
-	    double beliefAllFalse = beliefRep.one();
-        for (int i = wL.value(); i <= wR.value(); i++) {
-	        beliefAllFalse = beliefRep.multiply(beliefAllFalse, outsideBelief(i,0));
-	    }
-        for (int i = wL.value(); i <= wR.value(); i++) {
+        int lo = wL.value(), hi = wR.value();
+        // leave-one-out products of outsideBelief(., 0) over [lo, hi] by
+        // prefix/suffix (see field comment: never by division — an unbound
+        // literal may legitimately carry zero outside mass on false).
+        prefixFalse[lo] = beliefRep.one();
+        for (int i = lo; i <= hi; i++)
+            prefixFalse[i + 1] = beliefRep.multiply(prefixFalse[i], outsideBelief(i, 0));
+        suffixFalse[hi + 1] = beliefRep.one();
+        for (int i = hi; i >= lo; i--)
+            suffixFalse[i] = beliefRep.multiply(suffixFalse[i + 1], outsideBelief(i, 0));
+        for (int i = lo; i <= hi; i++) {
 	        if (!x[i].isBound()) {
-		        assert(!beliefRep.isZero(outsideBelief(i,0)));
 		        // will be normalized
 		        setLocalBelief(i, 1, beliefRep.one());
-		        setLocalBelief(i, 0, beliefRep.complement(beliefRep.divide(beliefAllFalse,outsideBelief(i,0))));
+		        setLocalBelief(i, 0, beliefRep.complement(
+		                beliefRep.multiply(prefixFalse[i], suffixFalse[i + 1])));
 	        }
 	    }
     }

@@ -32,6 +32,18 @@ public class Maximum extends AbstractConstraint {
     private int n;
     private double[][] beliefLessOrEqual;
     private double[] bProductLessOrEqual;
+    /**
+     * beliefProductExcluding[i][j] = prod over i' != i of beliefLessOrEqual[i'][j],
+     * computed by prefix/suffix products, NEVER by dividing bProductLessOrEqual
+     * by beliefLessOrEqual[i][j]: that division is 0/0 = NaN whenever variable
+     * i has zero outside-belief mass on values <= j+offset (observed on
+     * DeBruijn through opposite views, 2026-08-18; crashed the frontend with
+     * "NaN marginal"). Same lesson as the Ryser/deflation ban of the
+     * experiment line: leave-one-out by division is not sum-product.
+     */
+    private double[][] beliefProductExcluding;
+    private double[] prefixScratch;
+    private double[] suffixScratch;
     private int offset;
     private double yBeliefDifference[];
     private int yOffset;
@@ -73,6 +85,9 @@ public class Maximum extends AbstractConstraint {
         }
         beliefLessOrEqual = new double[n][max-min+1];
         bProductLessOrEqual = new double[max-min+1];
+        beliefProductExcluding = new double[n][max-min+1];
+        prefixScratch = new double[n + 1];
+        suffixScratch = new double[n + 1];
         offset = min;
         yBeliefDifference = new double[y.max()-y.min()+1];
         yOffset = y.min();
@@ -121,6 +136,15 @@ public class Maximum extends AbstractConstraint {
                 bProductLessOrEqual[j] = beliefRep.multiply( bProductLessOrEqual[j], beliefLessOrEqual[i][j]);
             }
 //            System.out.println("bProductLE "+ v + ": "+bProductLessOrEqual[j]);
+            // leave-one-out products by prefix/suffix (see field comment: no division)
+            prefixScratch[0] = beliefRep.one();
+            for (int i = 0; i < n; i++)
+                prefixScratch[i+1] = beliefRep.multiply(prefixScratch[i], beliefLessOrEqual[i][j]);
+            suffixScratch[n] = beliefRep.one();
+            for (int i = n - 1; i >= 0; i--)
+                suffixScratch[i] = beliefRep.multiply(suffixScratch[i+1], beliefLessOrEqual[i][j]);
+            for (int i = 0; i < n; i++)
+                beliefProductExcluding[i][j] = beliefRep.multiply(prefixScratch[i], suffixScratch[i+1]);
         }
         // precompute belief difference between consecutive values in the range of the domain of y
         for (int v = y.min(); v <= y.max(); v++) {
@@ -142,7 +166,7 @@ public class Maximum extends AbstractConstraint {
             // process values in the range of the domain of y in decreasing order...
             for (int v = y.max(); v >= y.min(); v--) {
 //                System.out.println("at y value " + v);
-                runningSum = beliefRep.add( runningSum, beliefRep.multiply( yBeliefDifference[v-yOffset], beliefRep.divide(bProductLessOrEqual[v-offset], beliefLessOrEqual[i][v-offset])));
+                runningSum = beliefRep.add( runningSum, beliefRep.multiply( yBeliefDifference[v-yOffset], beliefProductExcluding[i][v-offset]));
                 if (x[i].contains(v)) {
                     // belief for x[i]=v is (y=v and all other x[j]<=v) + (y=v'>v and all other x[j]<=v' and some x[k]=v')
                     setLocalBelief(i, v, runningSum);
@@ -151,7 +175,7 @@ public class Maximum extends AbstractConstraint {
             }
             //...and continue until x[i].min()
             if (x[i].min()<y.min()) { // a last adjustment
-                runningSum = beliefRep.subtract( runningSum, beliefRep.multiply( outsideBelief( n, y.min()), beliefRep.divide(bProductLessOrEqual[y.min()-1-offset], beliefLessOrEqual[i][y.min()-1-offset])));
+                runningSum = beliefRep.subtract( runningSum, beliefRep.multiply( outsideBelief( n, y.min()), beliefProductExcluding[i][y.min()-1-offset]));
             }
             for (int v = y.min()-1; v >= x[i].min(); v--) {
 //                System.out.println("at value " + v);

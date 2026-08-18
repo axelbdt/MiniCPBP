@@ -813,7 +813,22 @@ public class XCSP implements XCallbacks2 {
 		}
 	}
 
-	// TODO: buildCtrNotAllEqual(String id, XVarInteger[] list)
+	@Override
+	public void buildCtrNotAllEqual(String id, XVarInteger[] list) {
+		// 2026-08-18: implemented for RamseyPartition (gcc corpus widening).
+		// not-all-equal(x_0..x_{n-1})  <=>  exists i > 0 with x_i != x_0.
+		if (hasFailed)
+			return;
+		try {
+			IntVar[] xs = mapVarArray(list);
+			BoolVar[] diff = new BoolVar[xs.length - 1];
+			for (int i = 1; i < xs.length; i++)
+				diff[i - 1] = isNotEqual(xs[i], xs[0]);
+			minicp.post(or(diff));
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
+	}
 
 	@Override
 	public void buildCtrOrdered(String id, XVarInteger[] list, Types.TypeOperatorRel operator) {
@@ -2228,6 +2243,16 @@ public class XCSP implements XCallbacks2 {
 		IntVar[] vars = mapVar.entrySet().stream().sorted(new EntryComparator())
 				.map(Map.Entry::getValue).toArray(IntVar[]::new);
 		/* */
+
+		// 2026-08-18: a constraint-free instance (seen from a pycsp3
+		// mis-compilation that emits variables but no constraints) leaves
+		// mapVar empty and used to crash the branching heuristics with an
+		// ArrayIndexOutOfBoundsException; fail with a diagnosis instead.
+		if (vars.length == 0) {
+			System.out.println("status: UNSUPPORTED");
+			Log.info("c no branching variables (constraint-free or unparsed instance); not searching");
+			return;
+		}
 
 		/*
 		// GP for branching, use all vars registered in solver, not only those appearing in the model
