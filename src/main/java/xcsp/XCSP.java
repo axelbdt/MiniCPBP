@@ -2368,7 +2368,11 @@ public class XCSP implements XCallbacks2 {
 				Log.info("no solution was found");
 
 			Long runtime = System.currentTimeMillis() - t0;
-			printStats(stats, statsFileStr, runtime);
+			// 2026-08-19 LDS amendment: report the exact discrepancy of the
+			// solution path (-1 for DFS or when no solution was found).
+			int solutionDiscrepancy = (search instanceof LDSearch)
+					? ((LDSearch) search).solutionDiscrepancy() : -1;
+			printStats(stats, statsFileStr, runtime, solutionDiscrepancy);
 		}
 		else {
 			if(foundSolution) {
@@ -2416,7 +2420,7 @@ public class XCSP implements XCallbacks2 {
 			}
 	}
 
-	private void printStats(SearchStatistics stats, String statsFileStr, Long runtime) {
+	private void printStats(SearchStatistics stats, String statsFileStr, Long runtime, int solutionDiscrepancy) {
 		PrintStream out = null;
 		if (statsFileStr == "")
 			out = System.out;
@@ -2440,6 +2444,7 @@ public class XCSP implements XCallbacks2 {
 		out.println("status: " + statusStr);
 		out.println("failures: " + stats.numberOfFailures());
 		out.println("nodes: " + stats.numberOfNodes());
+		out.println("discrepancy: " + solutionDiscrepancy);
 		out.println("runtime (ms): " + runtime);
 
 		out.close();

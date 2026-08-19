@@ -48,6 +48,17 @@ public class LimitedDiscrepancyBranching implements Supplier<Procedure[]> {
         this.maxD = maxDiscrepancy;
     }
 
+    /**
+     * Discrepancy of the current node (sum over ancestors of the branch
+     * index taken). Read at a solution node it is the exact number of times
+     * the underlying heuristic's first choice was refused on the path —
+     * the guidance-quality instrument of GCC_EXPERIMENT.md §10 /
+     * BINPACKING_EXPERIMENT.md §8 (2026-08-19 LDS amendment).
+     */
+    public int currentDiscrepancy() {
+        return curD;
+    }
+
     @Override
     public Procedure[] get() {
         // Filter-out alternatives from that would exceed maxD

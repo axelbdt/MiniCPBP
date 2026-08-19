@@ -36,10 +36,19 @@ import org.antlr.v4.parse.ANTLRParser.throwsSpec_return;
 public class LDSearch extends Search{
 
     private Supplier<Procedure[]> branching;
-    private Supplier<Procedure[]> LDSbranching;
+    private LimitedDiscrepancyBranching LDSbranching;
     private boolean geometric; // true if the sequence of max discrepancies follows a geometric progression (with ratio=2); false if it follows an arithmetic progression (with difference=1)
     private int discrepancyUB;
     private StateManager sm;
+    // 2026-08-19 (LDS amendment, GCC_EXPERIMENT.md §10): exact discrepancy of
+    // the path to the last solution found, -1 if none. This is the
+    // guidance-quality metric — how many times the heuristic's first value
+    // choice had to be refused before a solution appeared.
+    private int solutionDiscrepancy = -1;
+
+    public int solutionDiscrepancy() {
+        return solutionDiscrepancy;
+    }
 
     /**
      * Creates a Limited Discrepancy Search object with a given branching
@@ -70,12 +79,23 @@ public class LDSearch extends Search{
 		    LDSbranching = new LimitedDiscrepancyBranching(branching, 0);
 		    lds(statistics, limit);
 		}
-                else 
-		    while(maxDiscrepancy <= discrepancyUB) { // nb discrepancies of rightmost branch <= nb vars * (domain size - 1)
-			LDSbranching = new LimitedDiscrepancyBranching(branching, maxDiscrepancy);
-			// System.out.println("LDS: on search tree with max discrepancy = "+maxDiscrepancy);
+                else
+		    // 2026-08-19 completeness fix: the last pass must reach
+		    // discrepancyUB exactly. The previous geometric loop
+		    // (while maxD <= UB, maxD *= 2) stopped after the largest
+		    // power of two <= UB, leaving the highest-discrepancy
+		    // paths unexplored while setCompleted() below still
+		    // declared the search complete — an unsound UNSAT when UB
+		    // is not a power of two. The cap keeps the geometric
+		    // schedule but clamps the final pass to UB.
+		    while (true) { // nb discrepancies of rightmost branch <= nb vars * (domain size - 1)
+			int cap = Math.min(maxDiscrepancy, discrepancyUB);
+			LDSbranching = new LimitedDiscrepancyBranching(branching, cap);
+			// System.out.println("LDS: on search tree with max discrepancy = "+cap);
 			lds(statistics, limit);
 			// System.out.println(statistics);
+			if (cap >= discrepancyUB)
+			    break;
 			if (geometric)
 			    maxDiscrepancy *= 2;
 			else
@@ -233,6 +253,7 @@ public class LDSearch extends Search{
             Procedure[] branches = LDSbranching.get();
             if (branches.length == 0) {
                 statistics.incrSolutions();
+                solutionDiscrepancy = LDSbranching.currentDiscrepancy();
                 notifySolution();
             } else {
                 final int total = branches.length;
