@@ -69,6 +69,15 @@ public class MiniCP implements Solver {
     private static final boolean actOnZeroOneBelief = false;
     // relative decrease of metric to trigger BP; in interval [0,1] where 0 means always trigger
     private static double beliefUpdateThreshold = 0.05;
+    /**
+     * 2026-08-19 (TODO.md item 3): forces BP at every search node, disabling
+     * the "reuse current marginals" shortcut below. With the shortcut on,
+     * the marginals a node sees are inherited from whichever ancestor last
+     * ran BP, so branching is a function of the PATH, not of the domains.
+     */
+    private static final boolean ALWAYS_RUN_BP = Boolean.getBoolean("minicpbp.debug.alwaysRunBP");
+    private static final boolean SKIP_REUSE_NORMALIZE = Boolean.getBoolean("minicpbp.debug.skipReuseNormalize");
+    private static final boolean SCRUB_OUTSIDE_BELIEF = Boolean.getBoolean("minicpbp.debug.scrubOutsideBelief");
     // representation of beliefs: either standard (StdBelief: [0..1]) or log (LogBelief: [-infinity..0])
     private final Belief beliefRep = new StdBelief();
     // SAME   /* constraints all have the same weight; = 1.0 (default) */
@@ -310,10 +319,20 @@ public class MiniCP implements Solver {
             sum += iterator.next().size();
         }
         potentialTrigger++;
-        if (sum >= (1.0 - beliefUpdateThreshold) * sumDomainSizes.value()) { // trigger BP only if domains sufficiently changed
-            iterator = variables.iterator();
-            while (iterator.hasNext()) {
-                iterator.next().normalizeMarginals();
+        if (!ALWAYS_RUN_BP && sum >= (1.0 - beliefUpdateThreshold) * sumDomainSizes.value()) { // trigger BP only if domains sufficiently changed
+            // 2026-08-19 (TODO.md item 3 diagnosis): renormalizing on the
+            // reuse path is not idempotent in floating point (v / sum(v)
+            // drifts by ulps when sum is ~1 but not exactly 1). Repeated
+            // skip-path renormalizations at positions the trail never pops
+            // (e.g. the root of successive LDS passes) make marginals drift
+            // across passes; entropy-scale ~1e-11 comparisons then amplify
+            // ulp drift into different branching. The debug property
+            // disables the renormalization to isolate that mechanism.
+            if (!SKIP_REUSE_NORMALIZE) {
+                iterator = variables.iterator();
+                while (iterator.hasNext()) {
+                    iterator.next().normalizeMarginals();
+                }
             }
             return; // reuse current marginals
         }
@@ -338,6 +357,18 @@ public class MiniCP implements Solver {
                     c = iteratorC.next();
                     if (c.isActive())
                         c.resetLocalBelief();
+                }
+                if (SCRUB_OUTSIDE_BELIEF) {
+                    // 2026-08-19 (TODO.md item 3 diagnosis): outsideBelief is a
+                    // plain (non-trailed) array; residue from previously visited
+                    // nodes survives backtracking. Scrub to isolate it as a
+                    // path-dependence carrier.
+                    iteratorC = constraints.iterator();
+                    while (iteratorC.hasNext()) {
+                        c = iteratorC.next();
+                        if (c.isActive())
+                            c.resetOutsideBelief();
+                    }
                 }
                 prevOutsideBeliefRecorded = false;
             }

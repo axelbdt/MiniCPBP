@@ -2372,7 +2372,14 @@ public class XCSP implements XCallbacks2 {
 			// solution path (-1 for DFS or when no solution was found).
 			int solutionDiscrepancy = (search instanceof LDSearch)
 					? ((LDSearch) search).solutionDiscrepancy() : -1;
-			printStats(stats, statsFileStr, runtime, solutionDiscrepancy);
+			// 2026-08-19 run-length accounting (TODO.md item 3): naive LDS
+			// re-expands the tree prefix each pass, so cumulative nodes are
+			// not comparable to a DFS tree size. Per-pass deltas
+			// (cap:nodes:failures:solutions) make total-expanded vs
+			// final-pass work distinguishable downstream.
+			String ldsPasses = (search instanceof LDSearch)
+					? ((LDSearch) search).passSummary() : "";
+			printStats(stats, statsFileStr, runtime, solutionDiscrepancy, ldsPasses);
 		}
 		else {
 			if(foundSolution) {
@@ -2420,7 +2427,7 @@ public class XCSP implements XCallbacks2 {
 			}
 	}
 
-	private void printStats(SearchStatistics stats, String statsFileStr, Long runtime, int solutionDiscrepancy) {
+	private void printStats(SearchStatistics stats, String statsFileStr, Long runtime, int solutionDiscrepancy, String ldsPasses) {
 		PrintStream out = null;
 		if (statsFileStr == "")
 			out = System.out;
@@ -2445,6 +2452,8 @@ public class XCSP implements XCallbacks2 {
 		out.println("failures: " + stats.numberOfFailures());
 		out.println("nodes: " + stats.numberOfNodes());
 		out.println("discrepancy: " + solutionDiscrepancy);
+		if (!ldsPasses.isEmpty())
+			out.println("ldsPasses: " + ldsPasses);
 		out.println("runtime (ms): " + runtime);
 
 		out.close();

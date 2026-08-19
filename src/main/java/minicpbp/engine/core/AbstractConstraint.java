@@ -178,6 +178,18 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     protected double setLocalBelief(int i, int val, double b) {
+        // 2026-08-19 (TODO.md item 1): constraints with signed belief circuits
+        // (complement/subtract: NegTableCT, Maximum, ...) can emit -epsilon
+        // where the exact value is 0 (floating-point cancellation). Negative
+        // beliefs violate the probability contract downstream (Soules U^3
+        // requires a nonnegative matrix; crashed LoBiancoBound on
+        // CarSequencing). Clamp at the framework boundary, counted, so no
+        // producer needs case-by-case fixes and the violation rate is
+        // measured. NaN is deliberately NOT masked here.
+        if (beliefRep.rep2std(b) < 0) {
+            minicpbp.util.BeliefClampStats.recordClamp(beliefRep.rep2std(b));
+            b = beliefRep.zero();
+        }
         return localBelief[i][val - ofs[i]].setValue(b);
     }
 

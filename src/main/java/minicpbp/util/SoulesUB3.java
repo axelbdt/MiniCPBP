@@ -8,6 +8,10 @@
  * evaluation order, so the numbers are bit-identical) so that the offline
  * Phase 1 comparison and the solver run the *same* code rather than two copies
  * that can drift apart. See IMPLEMENTATION_LOG.md, 2026-08-16.
+ *
+ * 2026-08-19 amendment (TODO.md item 1): non-positive/NaN matrix entries are
+ * skipped (counted in BeliefClampStats) instead of crashing on gamma[<0].
+ * For valid nonnegative input the arithmetic remains bit-identical.
  */
 
 package minicpbp.util;
@@ -53,6 +57,18 @@ public final class SoulesUB3 {
                 for (int j = 0; j < dim; j++) {
                     tmp = beliefs[i][j];
                     if (j != val) { // exclude column of val whose belief we are computing
+                        // 2026-08-19 (TODO.md item 1): U^3 is defined for
+                        // NONNEGATIVE matrices only. Signed belief circuits
+                        // upstream can leak -epsilon entries (cancellation);
+                        // a negative rowSum indexed gamma[-8] and crashed.
+                        // Treat non-positive/NaN entries as no support (their
+                        // exact value is 0) — bit-identical for valid input:
+                        // skipping `rowSum += 0.0` and a `> 0` compare
+                        // changes nothing.
+                        if (!(tmp > 0)) {
+                            if (tmp != 0) BeliefClampStats.soulesEntrySkips++;
+                            continue;
+                        }
                         rowSum += tmp;
                         if (tmp > rowMx)
                             rowMx = tmp;
@@ -103,8 +119,9 @@ public final class SoulesUB3 {
         for (int i = 0; i < dim; i++) {
             if (i != var) { // exclude row of var whose belief we are computing
                 rSum = 1.0 - beliefs[i][val]; // each row of m (beliefs) sums to one
+                if (rSum < 0) rSum = 0; // 2026-08-19: guard vs entries > 1 (see ub3)
                 rMax = (rowMax[i] == beliefs[i][val] ? rowMaxSecondBest[i] : rowMax[i]);
-                if (rMax == 0)
+                if (!(rMax > 0))
                     return 0;
                 tmp = rSum / rMax;
                 tmpFloor = (int) Math.floor(tmp);

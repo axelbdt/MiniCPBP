@@ -263,7 +263,17 @@ public final class Factory {
         for (int i = 0; i < cp.getVariables().size(); i++) {
             discrepancyUB += cp.getVariables().get(i).size() - 1;
         }
-        return new LDSearch(cp.getStateManager(), branching, geometric, discrepancyUB);
+        LDSearch lds = new LDSearch(cp.getStateManager(), branching, geometric, discrepancyUB);
+        // 2026-08-19 (TODO.md item 3): expose the total domain size so LDSearch
+        // can record how much the root state has been strengthened at the start
+        // of each pass (all passes share one state level, so root-level
+        // reductions accumulate).
+        lds.setRootDomainSizeProbe(() -> {
+            int s = 0;
+            for (int i = 0; i < cp.getVariables().size(); i++) s += cp.getVariables().get(i).size();
+            return s;
+        });
+        return lds;
     }
 
     public static LDSearch makeLds(Solver cp, Supplier<Procedure[]> branching) {

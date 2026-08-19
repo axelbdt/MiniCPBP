@@ -52,7 +52,16 @@ public class Sum extends AbstractConstraint {
 
         @Override
         public int compare(Integer i, Integer j) {
-            return (x[i].max() - x[i].min()) - (x[j].max() - x[j].min());
+            // 2026-08-19 (TODO.md item 3, run-length anomaly): tie-break on
+            // the variable index. unBounds is permuted by propagate()'s swaps
+            // and never restored on backtrack, so a range-only (stable) sort
+            // inherits that history-dependent order; the belief DP then sums
+            // in a path-dependent order, and its ulp-level noise is amplified
+            // by downstream thresholds (BP early stops, isZero/isOne actions,
+            // min-entropy near-ties) into path-dependent search trees. The
+            // index tie-break makes the order a function of solver state only.
+            int d = (x[i].max() - x[i].min()) - (x[j].max() - x[j].min());
+            return (d != 0) ? d : Integer.compare(i, j);
         }
     }
 
@@ -198,6 +207,12 @@ public class Sum extends AbstractConstraint {
             // NOTE: we do not explicitly set the local belief of bound variables: handled by normalizeMarginals()
             if (nUnBounds.value() == 0)
                 return;
+            // 2026-08-19 (TODO.md item 3): canonicalize the DP order HERE, not
+            // only in propagate() — after a backtrack this constraint's
+            // propagate() may not have run again, leaving unBounds in a
+            // history-dependent permutation. Sorting (range, then index) makes
+            // the emitted beliefs a function of the solver state alone.
+            Arrays.sort(unBounds, 0, nUnBounds.value(), domRangeComparator);
             // compute the range of feasible states for each layer
             int fwd_hi = offset + sumBounds.value();
             int fwd_lo = fwd_hi;

@@ -49,9 +49,23 @@ public class SparseSetDomain implements IntDomain {
         rand = cp.getRandomNbGenerator();
     }
 
+    /**
+     * 2026-08-19 (TODO.md item 3, run-length anomaly): the sparse set restores
+     * MEMBERSHIP on backtrack but not the ORDER of its elements
+     * (StateSparseSet.exchangePositions writes untrailed arrays). Every
+     * consumer of fillArray therefore sees a history-dependent enumeration:
+     * belief DPs accumulate in a different order (ulp-level differences) and
+     * valueWithMaxMarginal / selectMin break exact ties by that order. This
+     * debug flag canonicalizes the enumeration to isolate the effect.
+     */
+    private static final boolean SORT_DOMAIN_VALUES =
+            Boolean.getBoolean("minicpbp.debug.sortDomainValues");
+
     @Override
     public int fillArray(int[] dest) {
-        return domain.fillArray(dest);
+        int s = domain.fillArray(dest);
+        if (SORT_DOMAIN_VALUES) java.util.Arrays.sort(dest, 0, s);
+        return s;
     }
 
     @Override

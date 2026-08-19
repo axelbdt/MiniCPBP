@@ -119,40 +119,37 @@ public final class GccBP {
                     nxt[u + 1] = cur[u + 1] + cur[u] * q1; // overflow absorbs
                     // note: overflow bin uses q0+q1=1 mass conservation: cur[u+1]*(q0+q1)=cur[u+1]
                 }
-                // suffix
+                // WEIGHTED backward (2026-08-19, TODO.md item 2): suf[i][c] =
+                // sum over assignments of z_{i..n-1,j} of (prod q) * w(c + count),
+                // the same O(n*u) construction as BinPackingBP.java:128-144.
+                // Replaces the previous per-variable convolutions (two nested
+                // c1 loops), which cost Theta(n*u^2) per class against the
+                // documented O(n*(u+2)). Algebraically identical: the weight
+                // is zero beyond u, which reproduces the old c <= u truncation.
+                double[] w = (wOcc == null) ? null : wOcc[j];
                 double[] s0 = suf[n];
-                java.util.Arrays.fill(s0, 0, bins, 0.0);
-                s0[0] = 1.0;
+                for (int c = 0; c <= u; c++)
+                    s0[c] = (w != null) ? w[c] : ((c >= low[j]) ? 1.0 : 0.0);
+                s0[u + 1] = 0.0; // counts beyond u carry zero weight
                 for (int i = n - 1; i >= 0; i--) {
                     double[] cur = suf[i + 1];
                     double[] nxt = suf[i];
                     double m = mu[j][i];
                     double norm = 1.0 + m;
                     double q0 = 1.0 / norm, q1 = m / norm;
-                    nxt[0] = cur[0] * q0;
-                    for (int c = 1; c <= u; c++) nxt[c] = cur[c] * q0 + cur[c - 1] * q1;
-                    nxt[u + 1] = cur[u + 1] + cur[u] * q1;
+                    for (int c = 0; c <= u; c++) nxt[c] = cur[c] * q0 + cur[c + 1] * q1;
+                    nxt[u + 1] = 0.0;
                 }
-                // leave-one-out: distribution of sum_{i' != i} z_{i'j} = pre[i] (x) suf[i+1]
-                double[] w = (wOcc == null) ? null : wOcc[j];
+                // leave-one-out in O(u) per variable:
+                //   den (z_ij = 0) = sum_c pre[i][c] * sufW[i+1][c]
+                //   num (z_ij = 1) = sum_c pre[i][c] * sufW[i+1][c+1]
                 for (int i = 0; i < n; i++) {
                     double[] pi = pre[i];
                     double[] si = suf[i + 1];
                     double num = 0.0, den = 0.0;
-                    // P_{-i}(c) = sum_{c1+c2=c} pi[c1]*si[c2], c <= u needed
                     for (int c = 0; c <= u; c++) {
-                        double pc = 0.0;
-                        for (int c1 = 0; c1 <= c; c1++) pc += pi[c1] * si[c - c1];
-                        double wc = (w != null) ? w[c] : ((c >= low[j]) ? 1.0 : 0.0);
-                        if (wc != 0.0) den += wc * pc;      // z_ij = 0: total count c
-                        if (c >= 1) {
-                            double wc1 = wc;                 // z_ij = 1: total count c, others c-1
-                            if (wc1 != 0.0) {
-                                double pc1 = 0.0;
-                                for (int c1 = 0; c1 <= c - 1; c1++) pc1 += pi[c1] * si[c - 1 - c1];
-                                num += wc1 * pc1;
-                            }
-                        }
+                        den += pi[c] * si[c];
+                        if (c < u) num += pi[c] * si[c + 1];
                     }
                     double ratio;
                     if (den > 0) ratio = num / den;

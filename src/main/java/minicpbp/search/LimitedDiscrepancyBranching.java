@@ -32,7 +32,13 @@ import java.util.function.Supplier;
 public class LimitedDiscrepancyBranching implements Supplier<Procedure[]> {
 
     private int curD;
+    private int truncations;
     private final int maxD;
+
+    /** number of nodes at which the discrepancy cap removed at least one alternative */
+    public int truncations() {
+        return truncations;
+    }
     private final Supplier<Procedure[]> bs;
 
     /**
@@ -69,6 +75,10 @@ public class LimitedDiscrepancyBranching implements Supplier<Procedure[]> {
         Procedure[] branches = bs.get();
 
         int k = Math.min(maxD - curD + 1, branches.length);
+        // 2026-08-19 (TODO.md item 3): count nodes where the cap actually
+        // removed alternatives. A pass with zero truncations explored a
+        // COMPLETE tree, so its node count is directly comparable to DFS.
+        if (k < branches.length) truncations++;
 
         if (k == 0) return BranchingScheme.EMPTY;
 

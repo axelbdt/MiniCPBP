@@ -50,6 +50,37 @@ public class LDSearch extends Search{
         return solutionDiscrepancy;
     }
 
+    // 2026-08-19 (TODO.md item 3, run-length accounting): naive LDS re-expands
+    // the tree prefix on every pass, so the cumulative node count is NOT
+    // comparable to a DFS tree size. Per-pass deltas separate the quantities:
+    // the final pass (cap >= discrepancyUB) is a complete fresh depth-first
+    // traversal and its node count IS directly comparable to DFS; the earlier
+    // passes are the revisit overhead. Rows: {cap, nodes, failures, solutions}.
+    private final java.util.List<long[]> passStats = new java.util.ArrayList<>();
+
+    // 2026-08-19 (TODO.md item 3): total domain size at each pass's root.
+    // All LDS passes run inside ONE state level, so any domain reduction made
+    // at a pass root (belief-driven filtering in
+    // AbstractConstraint.sendMessages, or propagation) is NOT undone between
+    // passes: later passes start from a strictly stronger root state. This
+    // probe measures exactly that carried information.
+    private java.util.function.IntSupplier rootDomainSizeProbe;
+
+    public void setRootDomainSizeProbe(java.util.function.IntSupplier p) {
+        this.rootDomainSizeProbe = p;
+    }
+
+    /** per-pass "cap:nodes:failures:solutions:rootDomainSizeSum" joined by ';' */
+    public String passSummary() {
+        StringBuilder sb = new StringBuilder();
+        for (long[] p : passStats) {
+            if (sb.length() > 0) sb.append(';');
+            sb.append(p[0]).append(':').append(p[1]).append(':').append(p[2]).append(':').append(p[3])
+              .append(':').append(p[4]);
+        }
+        return sb.toString();
+    }
+
     /**
      * Creates a Limited Discrepancy Search object with a given branching
      * that defines the search tree dynamically.
@@ -77,7 +108,7 @@ public class LDSearch extends Search{
             try {
 		if (discrepancyUB==0) { // special case of all vars already being fixed
 		    LDSbranching = new LimitedDiscrepancyBranching(branching, 0);
-		    lds(statistics, limit);
+		    ldsPass(0, statistics, limit);
 		}
                 else
 		    // 2026-08-19 completeness fix: the last pass must reach
@@ -92,7 +123,7 @@ public class LDSearch extends Search{
 			int cap = Math.min(maxDiscrepancy, discrepancyUB);
 			LDSbranching = new LimitedDiscrepancyBranching(branching, cap);
 			// System.out.println("LDS: on search tree with max discrepancy = "+cap);
-			lds(statistics, limit);
+			ldsPass(cap, statistics, limit);
 			// System.out.println(statistics);
 			if (cap >= discrepancyUB)
 			    break;
@@ -245,6 +276,28 @@ public class LDSearch extends Search{
         return statistics;
     }
 
+
+    /** one LDS pass with per-pass statistics deltas recorded (see passStats) */
+    private void ldsPass(int cap, SearchStatistics statistics, Predicate<SearchStatistics> limit) {
+        long n0 = statistics.numberOfNodes();
+        long f0 = statistics.numberOfFailures();
+        long s0 = statistics.numberOfSolutions();
+        long rootDom = (rootDomainSizeProbe == null) ? -1 : rootDomainSizeProbe.getAsInt();
+        long[] row = {cap, 0, 0, 0, rootDom};
+        passStats.add(row);
+        try {
+            lds(statistics, limit);
+        } finally {
+            row[1] = statistics.numberOfNodes() - n0;
+            row[2] = statistics.numberOfFailures() - f0;
+            row[3] = statistics.numberOfSolutions() - s0;
+            if (Boolean.getBoolean("minicpbp.lds.trace"))
+                System.err.println("LDS pass cap=" + cap + " nodes=" + row[1]
+                        + " failures=" + row[2] + " solutions=" + row[3]
+                        + " rootDomainSizeSum=" + rootDom
+                        + " truncations=" + LDSbranching.truncations());
+        }
+    }
 
     private void lds(SearchStatistics statistics, Predicate<SearchStatistics> limit) {
         if (limit.test(statistics))
