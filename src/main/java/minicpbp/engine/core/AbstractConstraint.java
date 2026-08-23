@@ -355,12 +355,21 @@ public abstract class AbstractConstraint implements Constraint {
      * message; it is kept here before damping is applied, since damping must
      * affect what the factor reads and not what the search reads.
      * <p>
-     * The quotient is not defined where the old message was exactly zero
-     * ({@code IntVar.sendMessage} answers uniform there, which is right for a
-     * factor input but wrong for reconstructing a marginal), and it is not
-     * defined when the reconstructed marginal carries no mass. Both cases hand
-     * the variable to {@code resync}, which recomputes the exact product over
-     * the variable's factors; both are counted.
+     * The quotient is not always defined, and the three cases are handled
+     * differently, each counted:
+     * <ul>
+     * <li>the old message was exactly zero for some value.
+     * {@code IntVar.sendMessage} answers uniform there, which is the right
+     * input for a factor but the wrong factor for reconstructing a marginal.
+     * It only matters where that message stops being zero — while it stays
+     * zero the product is zero either way — and then the variable is handed to
+     * {@code resync}, which rebuilds the exact product over its factors;</li>
+     * <li>the whole cavity has no mass, or left the representable range
+     * because the message divided out was denormal. The vector carries no
+     * information and a weighted counter fed a vector of zeros answers NaN
+     * rather than zero, so "uniform" is used instead;</li>
+     * <li>the reconstructed marginal has no mass: {@code resync} again.</li>
+     * </ul>
      *
      * @param resync recomputes a variable's marginal from all its factors, or
      *               null to accept the uniform-cavity approximation
@@ -421,8 +430,10 @@ public abstract class AbstractConstraint implements Constraint {
             // (setLocalBelief deliberately does not mask NaN, and SumDC's
             // forward/backward DP propagates it). Answer "uniform" instead,
             // which is what IntVar.sendMessage already answers for a single
-            // zero-valued message. Both cases need warm-started marginals to
-            // be reachable, and both are counted.
+            // zero-valued message, and count it. Warm-started marginals reach
+            // the out-of-range case; the empty case is reached on the ordinary
+            // cold path too, wherever every value of a variable is excluded by
+            // some factor other than this one.
             boolean bad = false, empty = true;
             for (int j = 0; j < s; j++) {
                 int val = domainValues[j];
