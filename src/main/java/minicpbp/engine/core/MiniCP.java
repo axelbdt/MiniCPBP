@@ -67,8 +67,20 @@ public class MiniCP implements Solver {
     private static final boolean resetMarginalsBeforeBP = true;
     // take action upon zero/one beliefs: remove/assign the corresponding value
     private static final boolean actOnZeroOneBelief = false;
-    // relative decrease of metric to trigger BP; in interval [0,1] where 0 means always trigger
-    private static double beliefUpdateThreshold = 0.05;
+    /**
+     * Relative decrease of the metric to trigger BP; in interval [0,1] where 0
+     * triggers whenever any domain changed at all.
+     * <p>
+     * Exposed as {@code -Dminicpbp.bp.updateThreshold} (F8). Two properties of
+     * the metric matter when reading a measurement made under it: it is a
+     * global scalar over <em>all</em> registered variables, auxiliaries
+     * included, so one variable's collapse can hide every other variable's
+     * stability and vice versa; and its denominator {@code sumDomainSizes} is a
+     * trailed {@code StateInt}, i.e. the value left by the last ancestor on
+     * this path that actually ran BP, not by the parent. Marginals a node
+     * branches on are therefore a function of the path, not of the domains.
+     */
+    private static double beliefUpdateThreshold = minicpbp.util.BPConfig.UPDATE_THRESHOLD;
     /**
      * 2026-08-19 (TODO.md item 3): forces BP at every search node, disabling
      * the "reuse current marginals" shortcut below. With the shortcut on,
@@ -106,12 +118,28 @@ public class MiniCP implements Solver {
     private BPScheduler scheduler;
     private boolean graphDumped = false;
 
+    /* incremental dirty seeding (BP_WARM_START_EXPERIMENT.md section 1.3):
+     * a monotone counter of real invocations, and the trailed epoch of the last
+     * one on the current path. */
+    private int bpEpoch = 0;
+    private StateInt bpPathEpoch;
+
+    /** the array the branching heuristic scans, for a decision-directed stop */
+    private IntVar[] branchingOrder;
+
     public MiniCP(StateManager sm) {
         this.sm = sm;
         variables = new StateStack<>(sm);
         constraints = new StateStack<>(sm);
-        rand = new Random();
+        // F9: -Dminicpbp.seed makes the RNG reproducible. It does NOT make a run
+        // deterministic on its own: the sparse set restores membership but not
+        // the ORDER of its elements, and randomValue() indexes into fillArray's
+        // output, so -Dminicpbp.debug.sortDomainValues is needed as well. Time
+        // that flag before putting it in an arm — it fires per fillArray call.
+        rand = (minicpbp.util.BPConfig.SEED == null)
+                ? new Random() : new Random(minicpbp.util.BPConfig.SEED);
         sumDomainSizes = sm.makeStateInt(Integer.MAX_VALUE);
+        bpPathEpoch = sm.makeStateInt(0);
     }
 
     public MiniCP(StateManager sm, long seed) {
@@ -120,6 +148,22 @@ public class MiniCP implements Solver {
         constraints = new StateStack<>(sm);
         rand = new Random(seed);
         sumDomainSizes = sm.makeStateInt(Integer.MAX_VALUE);
+        bpPathEpoch = sm.makeStateInt(0);
+    }
+
+    @Override
+    public int bpEpoch() {
+        return bpEpoch;
+    }
+
+    @Override
+    public int bpPathEpoch() {
+        return bpPathEpoch.value();
+    }
+
+    @Override
+    public void setBranchingOrder(IntVar[] x) {
+        branchingOrder = x;
     }
 
     public long trigger() {return trigger;}
@@ -392,6 +436,7 @@ public class MiniCP implements Solver {
             trigger++;
             minicpbp.util.BPStats.invocations++;
             sumDomainSizes.setValue(sum);
+            bpEpoch++;
         }
         notifyBeliefPropa();
         try {
@@ -403,47 +448,18 @@ public class MiniCP implements Solver {
             // correctly backtracked) marginals and local beliefs are thrown
             // away and BP reconverges from uniform. WARM_START keeps them and
             // continues from there instead.
+            boolean fullDirty = true;
             if (resetMarginalsBeforeBP && !minicpbp.util.BPConfig.WARM_START) {
-                // start afresh at each search-tree node
-                iterator = variables.iterator();
-                while (iterator.hasNext()) {
-                    iterator.next().resetMarginals();
-                }
-                 Iterator<Constraint> iteratorC = constraints.iterator();
-                while (iteratorC.hasNext()) {
-                    c = iteratorC.next();
-                    if (c.isActive())
-                        c.resetLocalBelief();
-                }
-                if (SCRUB_OUTSIDE_BELIEF) {
-                    // 2026-08-19 (TODO.md item 3 diagnosis): outsideBelief is a
-                    // plain (non-trailed) array; residue from previously visited
-                    // nodes survives backtracking. Scrub to isolate it as a
-                    // path-dependence carrier.
-                    iteratorC = constraints.iterator();
-                    while (iteratorC.hasNext()) {
-                        c = iteratorC.next();
-                        if (c.isActive())
-                            c.resetOutsideBelief();
-                    }
-                }
-                prevOutsideBeliefRecorded = false;
+                coldReset();
             }
             else if (minicpbp.util.BPConfig.WARM_START) {
-                // Warm start keeps the restored marginals, but propagation since
-                // the last invocation can have removed every value that carried
-                // mass, leaving a zero vector no amount of message passing
-                // recovers from. Renormalise, and start from uniform exactly
-                // where the mass is gone.
-                iterator = variables.iterator();
-                while (iterator.hasNext()) {
-                    IntVar v = iterator.next();
-                    v.normalizeMarginals();
-                    if (beliefRep.isZero(v.maxMarginal())) v.resetMarginals();
-                }
+                fullDirty = warmEntry();
             }
             BPScheduler sched = scheduler();
-            sched.beginInvocation();
+            // the seeding must read the watermark of the PREVIOUS invocation on
+            // this path, so the update below happens after beginInvocation
+            sched.beginInvocation(fullDirty);
+            bpPathEpoch.setValue(bpEpoch);
             if (minicpbp.util.BPConfig.DUMP_GRAPH && !graphDumped && bpGraph != null) {
                 graphDumped = true;
                 // stderr: harnesses redirect stdout while solving
@@ -453,6 +469,8 @@ public class MiniCP implements Solver {
             decisionVar = null;
             decisionVal = Integer.MIN_VALUE;
             stableDecisionSweeps = 0;
+            convergeSnapshotValid = false;
+            final minicpbp.util.BPConfig.StopRule rule = minicpbp.util.BPConfig.STOP_RULE;
             sched.run(beliefPropaMaxIter, iter -> {
                 Log.bpIteration(iter, variables);
                 double previousEntropy = entropy[0];
@@ -463,20 +481,40 @@ public class MiniCP implements Solver {
                     prevOutsideBeliefRecorded = true;
                 Log.bpEntropy(currentEntropy, smallEntropy);
                 Log.modelEntropy(variables, nbBranchingVariables());
-                // stopping criteria
-                if (currentEntropy == 0) { // either all branching vars are bound or BP says there's no solution
+                // Stopping criteria. Exactly one rule is in force and it
+                // REPLACES the others (F6): the shipped code tested three of
+                // them in sequence, so whichever sat highest in the body won,
+                // NO_EARLY_STOP returned before STABLE_DECISION_SWEEPS was ever
+                // read, and MIN_VAR_ENTROPY fired within one or two sweeps and
+                // made the knob below it inert.
+                if (currentEntropy == 0) {
+                    // either all branching vars are bound or BP says there is no
+                    // solution: a correctness stop, in force in every mode
                     return true;
                 }
-                if (minicpbp.util.BPConfig.NO_EARLY_STOP) return false; // measure at a fixed budget
-                if (minicpbp.util.BPConfig.STABLE_DECISION_SWEEPS > 0 && decisionSettled())
-                    return true;
-                // CAVEAT: this one only really makes sense if we are branching on the min entropy or max marginal (strength) variable
-                if (smallEntropy <= MIN_VAR_ENTROPY) { // at least one variable with low uncertainty about the value it should take
-                    return true;
+                switch (rule) {
+                    case FIXED:
+                        return false; // R1: measure at a fixed sweep budget
+                    case CONVERGE:
+                        // R2: the only criterion about movement rather than
+                        // confidence. The first sweep has nothing to compare
+                        // against, so it never stops there.
+                        return marginalMovement() <= minicpbp.util.BPConfig.CONVERGE_TOL;
+                    case DECISION:
+                        return decisionSettled(); // R3, Level 2 research
+                    default:
+                        // R0, production as it ships. CAVEAT: only really makes
+                        // sense when branching on min entropy or max marginal.
+                        if (smallEntropy <= MIN_VAR_ENTROPY) {
+                            // at least one variable is nearly certain of its value
+                            return true;
+                        }
+                        // marginals probably did not change either (and won't in the future)
+                        return (iter > 1) /* give it a chance to kick in */
+                                && (currentEntropy == previousEntropy);
                 }
-                // marginals probably did not change either (and won't in the future)
-                return (iter > 1) /* give it a chance to kick in */ && (currentEntropy == previousEntropy);
             });
+            sched.endInvocation();
         } catch (InconsistencyException e) {
             // empty the queue and unset the scheduled status
             while (!propagationQueue.isEmpty())
@@ -486,26 +524,183 @@ public class MiniCP implements Solver {
     }
 
     /**
+     * Throws away every stored message and marginal and starts the invocation
+     * from uniform. The historical behaviour of a real BP invocation.
+     * <p>
+     * Note what it costs and what it buys. It discards a consistent trail
+     * snapshot of {marginals, localBelief, prevOutsideBelief} that backtracking
+     * restored correctly, so no work can ever be inherited between nodes and
+     * the reuse gate is the only saving available. It also makes the invariant
+     * {@code b(v) = prod_c local_c(v)} hold trivially — {@code b} constant at
+     * ONE, every factor uniform, hence proportional — which is why the
+     * entailment leak the warm path suffers from was never visible here: this
+     * wipes the whole product and rebuilds it from the active factors only.
+     */
+    private void coldReset() {
+        Iterator<IntVar> iterator = variables.iterator();
+        while (iterator.hasNext()) {
+            iterator.next().resetMarginals();
+        }
+        Iterator<Constraint> iteratorC = constraints.iterator();
+        while (iteratorC.hasNext()) {
+            Constraint c = iteratorC.next();
+            if (c.isActive())
+                c.resetLocalBelief();
+        }
+        if (SCRUB_OUTSIDE_BELIEF) {
+            // 2026-08-19 (TODO.md item 3 diagnosis): outsideBelief is a
+            // plain (non-trailed) array; residue from previously visited
+            // nodes survives backtracking. Scrub to isolate it as a
+            // path-dependence carrier.
+            iteratorC = constraints.iterator();
+            while (iteratorC.hasNext()) {
+                Constraint c = iteratorC.next();
+                if (c.isActive())
+                    c.resetOutsideBelief();
+            }
+        }
+        prevOutsideBeliefRecorded = false;
+    }
+
+    /**
+     * Establishes the invariant {@code b(v) = prod_c local_c(v)} over the
+     * factors that are still <em>active</em>, at the entry of a warm-started
+     * invocation (BP_WARM_START_EXPERIMENT.md F1, F2, F3). One pass, of the
+     * same order as one flooding sweep's marginal rebuild.
+     * <p>
+     * Why the whole product rather than a targeted repair. Constraints
+     * deactivate when entailed, and the dead factor's last message stays
+     * multiplied into every neighbour's stored marginal forever: nothing
+     * divides it out, and {@code BPGraph.resync} cannot, because it multiplies
+     * only over active factors. A warm start therefore used to carry a spurious
+     * product that grows with depth. Dividing the factor out on
+     * {@code setActive(false)} would be cheaper and is riskier (division by a
+     * zero-valued message), so it is an optimisation to consider only if this
+     * pass shows up in the profile.
+     * <p>
+     * Applied under <em>every</em> schedule, including flooding. Flooding does
+     * rebuild the product from the active factors at the end of each sweep, but
+     * only at the end: {@code receiveMessages()} runs first and forms its
+     * cavities from the contaminated marginal. And if the entry invariant
+     * differed by schedule, the flood-versus-topo contrast would no longer be
+     * about the schedule.
+     *
+     * @return true when the pass had to fall back to a cold reset, so no work
+     * can be inherited and the dirty set must be seeded in full
+     */
+    private boolean warmEntry() {
+        long t0 = System.nanoTime();
+        Iterator<IntVar> iterator = variables.iterator();
+        while (iterator.hasNext()) {
+            iterator.next().resetMarginals();
+        }
+        Iterator<Constraint> iteratorC = constraints.iterator();
+        while (iteratorC.hasNext()) {
+            Constraint c = iteratorC.next();
+            if (c.isActive())
+                c.contributeMarginals();
+        }
+        boolean noMass = false;
+        iterator = variables.iterator();
+        while (iterator.hasNext()) {
+            IntVar v = iterator.next();
+            v.normalizeMarginals();
+            if (beliefRep.isZero(v.maxMarginal())) noMass = true;
+        }
+        // F3: cold's first sweep is undamped, so warm's must be too. This was
+        // set false only on the cold branch and inside BPtuneDamping, so after
+        // the first sweep ever it stayed true and the first message of every
+        // warm invocation blended in the ANCESTOR's last message — computed
+        // before the branching decision and before the propagation that
+        // followed it. A damping semantics nobody chose.
+        prevOutsideBeliefRecorded = false;
+        minicpbp.util.BPStats.warmEntryRebuilds++;
+        minicpbp.util.BPStats.warmEntryNanos += System.nanoTime() - t0;
+        if (!noMass) return false;
+        // F2: propagation since the last invocation can have removed every value
+        // that carried mass, leaving a zero vector no message passing recovers
+        // from. The previous repair set that marginal to ONE on every in-domain
+        // value while leaving every neighbouring localBelief untouched, which
+        // breaks the invariant by a non-constant factor: the next in-place
+        // update then reads a "cavity" proportional to 1/local_this, an
+        // anti-message maximally contradicting what the constraint just said,
+        // and writes it into the marginal for every later factor of the sweep to
+        // read. A full cold reset is the only repair that keeps the invariant,
+        // and it is exact.
+        minicpbp.util.BPStats.warmEntryColdFallbacks++;
+        coldReset();
+        return true;
+    }
+
+    /* R2 (F5): one snapshot of the branchable marginals, in standard
+     * representation. O(sum |D|) memory and per-sweep cost, the same order as
+     * problemEntropy() and smallestVariableEntropy(), both already computed
+     * every sweep. */
+    private double[] convergeSnapshot = new double[0];
+    private int[] convergeValues = new int[0];
+    private boolean convergeSnapshotValid = false;
+
+    /**
+     * The largest movement, in standard representation, of any marginal of an
+     * unbound branchable variable since the previous sweep — and refreshes the
+     * snapshot. Returns {@code Double.MAX_VALUE} on the first sweep of an
+     * invocation, which has nothing to compare against.
+     * <p>
+     * Restricting it to branchable variables is BP_SCHEDULING_TODO.md's Level 1.
+     * On this corpus that restriction is inert, since {@code XCSP.solve}
+     * declares every model variable branchable (P36), so expect it to cost more
+     * sweeps than MIN_VAR_ENTROPY rather than fewer. Its value is that the
+     * comparison between schedules becomes a comparison at equal convergence
+     * instead of at equal overconfidence.
+     * <p>
+     * The index alignment across sweeps relies on {@code fillArray} returning
+     * the same order twice, which holds within one invocation because BP never
+     * changes a domain ({@code actOnZeroOneBelief} is false) and the order only
+     * changes when the sparse set is modified.
+     */
+    private double marginalMovement() {
+        int k = 0;
+        double max = 0.0;
+        Iterator<IntVar> iterator = variables.iterator();
+        while (iterator.hasNext()) {
+            IntVar v = iterator.next();
+            if (v.isBound() || !v.isForBranching()) continue;
+            if (convergeValues.length < v.size()) convergeValues = new int[2 * v.size()];
+            int s = v.fillArray(convergeValues);
+            if (convergeSnapshot.length < k + s) {
+                double[] b = new double[Math.max(2 * (k + s), 64)];
+                System.arraycopy(convergeSnapshot, 0, b, 0, k);
+                convergeSnapshot = b;
+            }
+            for (int j = 0; j < s; j++) {
+                double m = beliefRep.rep2std(v.marginal(convergeValues[j]));
+                double d = Math.abs(m - convergeSnapshot[k]);
+                if (d > max) max = d;
+                convergeSnapshot[k++] = m;
+            }
+        }
+        if (!convergeSnapshotValid) {
+            convergeSnapshotValid = true;
+            return Double.MAX_VALUE;
+        }
+        return max;
+    }
+
+    /**
      * No-bells-and-whistles Belief Propagation
      * runs for a specified number of iterations, without message damping
      */
     public void vanillaBP(int nbIterations) {
         notifyBeliefPropa();
         setDamp(false);
-        Constraint c;
         try {
+            // F4: this used to have the reset but no warm branch, so under
+            // WARM_START it neither reset, nor re-established the invariant, nor
+            // repaired a zero-mass marginal — a live trap for any caller.
             if (resetMarginalsBeforeBP && !minicpbp.util.BPConfig.WARM_START) {
-                // start afresh at each search-tree node
-                Iterator<IntVar> iterator = variables.iterator();
-                while (iterator.hasNext()) {
-                    iterator.next().resetMarginals();
-                }
-                Iterator<Constraint> iteratorC = constraints.iterator();
-                while (iteratorC.hasNext()) {
-                    c = iteratorC.next();
-                    if (c.isActive())
-                        c.resetLocalBelief();
-                }
+                coldReset();
+            } else if (minicpbp.util.BPConfig.WARM_START) {
+                warmEntry();
             }
             for (int iter = 1; iter <= nbIterations; iter++) {
                 BPiteration();
@@ -541,6 +736,23 @@ public class MiniCP implements Solver {
      * tunes message damping for Belief Propagation according to observed entropy
      */
     private void BPtuneDamping() {
+        long t0 = System.nanoTime();
+        long sweeps0 = minicpbp.util.BPStats.sweeps;
+        try {
+            BPtuneDampingImpl();
+        } finally {
+            // F12: this runs once per solver instance at the root, up to 4
+            // trials of maxIter sweeps, OUTSIDE the monitored loop and before
+            // search.solve is entered — but inside the timed region, hence
+            // inside FloorBench's setupMs. With the reuse gate on and one
+            // invocation per 34k nodes it can be most of all the BP work in a
+            // run, and nothing separated it until now.
+            minicpbp.util.BPStats.tuneDampingNanos += System.nanoTime() - t0;
+            minicpbp.util.BPStats.tuneDampingSweeps += minicpbp.util.BPStats.sweeps - sweeps0;
+        }
+    }
+
+    private void BPtuneDampingImpl() {
         final double MIN_DAMPING_FACTOR = 0.5;
         final double DAMPING_FACTOR_DELTA = 0.15;
         Constraint c;
@@ -568,6 +780,7 @@ public class MiniCP implements Solver {
             currentDeltaEntropy = 0;
             valleyCount = 0;
             dampingFactorDetermined = true;
+            minicpbp.util.BPStats.tuneDampingTrials++;
             // BP dive
             for (int iter = 1; iter <= beliefPropaMaxIter; iter++) {
                 BPiteration();
@@ -693,18 +906,46 @@ public class MiniCP implements Solver {
      * whichever schedule is most overconfident, while the marginals are still
      * far from a fixed point. What the solver needs is the decision, so this
      * watches the decision.
+     * <p>
+     * F7: it has to watch the decision search will actually take. The engine's
+     * own {@code variables} stack is in registration order, while
+     * {@code BranchingScheme.minEntropy} scans the id-sorted array built in
+     * {@code XCSP.solve}; both break ties with a strict {@code <}, i.e. by
+     * array order, so on tied entropies the two select different variables.
+     * The array the heuristic scans is used when it has been registered.
+     * <p>
+     * Off-by-one, deliberately left as it is and documented instead: the
+     * counter increments only on a <em>repeat</em> and the first sweep compares
+     * against {@code null}, so {@code stableDecisionSweeps = k} means the same
+     * decision was observed on {@code k+1} consecutive sweeps.
+     * <p>
+     * Residual caveat that cannot be fixed here: {@code valueWithMaxMarginal}
+     * breaks its own ties by {@code fillArray} order, which the sparse set does
+     * not restore on backtrack. Two calls within one invocation agree, which is
+     * all this needs, but the value is not a function of the marginals alone.
      */
     private boolean decisionSettled() {
         IntVar best = null;
         double bestEntropy = Double.MAX_VALUE;
-        Iterator<IntVar> iterator = variables.iterator();
-        while (iterator.hasNext()) {
-            IntVar v = iterator.next();
-            if (v.isBound() || !v.isForBranching()) continue;
-            double h = v.entropy();
-            if (h < bestEntropy) {
-                bestEntropy = h;
-                best = v;
+        if (branchingOrder != null) {
+            for (IntVar v : branchingOrder) {
+                if (v.size() <= 1) continue; // selectMin's predicate: unbound
+                double h = v.entropy();
+                if (h < bestEntropy) {
+                    bestEntropy = h;
+                    best = v;
+                }
+            }
+        } else {
+            Iterator<IntVar> iterator = variables.iterator();
+            while (iterator.hasNext()) {
+                IntVar v = iterator.next();
+                if (v.isBound() || !v.isForBranching()) continue;
+                double h = v.entropy();
+                if (h < bestEntropy) {
+                    bestEntropy = h;
+                    best = v;
+                }
             }
         }
         if (best == null) return true; // nothing left to decide

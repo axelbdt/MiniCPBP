@@ -31,8 +31,25 @@ public interface BPScheduler {
      */
     void run(int maxSweeps, SweepMonitor monitor);
 
-    /** Called when a new invocation starts, before the first sweep. */
-    void beginInvocation();
+    /**
+     * Called when a new invocation starts, before the first sweep.
+     *
+     * @param fullDirty when true the schedule must treat every factor as stale,
+     *                  whatever it may know about what changed. The engine sets
+     *                  it when the invocation cannot inherit anything: a cold
+     *                  reset, or a warm entry that had to fall back to one.
+     */
+    void beginInvocation(boolean fullDirty);
+
+    /**
+     * Called once after the last sweep of an invocation, on the normal exit
+     * path only. A schedule that gates on staleness records here what it left
+     * un-executed, so the next invocation on this path can pick it up; an
+     * exception path deliberately records nothing, since the node is about to
+     * be backtracked and the conservative answer is "still stale".
+     */
+    default void endInvocation() {
+    }
 
     interface SweepMonitor {
         boolean afterSweep(int sweep);

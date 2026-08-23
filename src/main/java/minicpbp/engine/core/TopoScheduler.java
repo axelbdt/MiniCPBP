@@ -67,9 +67,15 @@ final class TopoScheduler implements BPScheduler {
     }
 
     @Override
-    public void beginInvocation() {
+    public void beginInvocation(boolean fullDirty) {
         graph.rebuild(BPConfig.QUERY_ONLY);
-        graph.dirtyAll();
+        if (BPConfig.INCREMENTAL_DIRTY) graph.dirtyChanged(fullDirty);
+        else graph.dirtyAll();
+    }
+
+    @Override
+    public void endInvocation() {
+        if (BPConfig.INCREMENTAL_DIRTY) graph.persistStale();
     }
 
     @Override

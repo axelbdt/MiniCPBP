@@ -33,8 +33,28 @@ public final class BPStats {
     /** factor updates skipped because at most one variable of the scope is unbound,
      *  so the outgoing message cannot change during this invocation */
     public static long factorSkipsFrozen;
-    /** exact marginal recomputations forced by a zero-valued incoming message */
+    /**
+     * Exact marginal recomputations, i.e. calls to {@code BPGraph.resync}.
+     * <p>
+     * Split by trigger below, because the four have nothing to do with each
+     * other. Two caveats: the count includes the
+     * {@code id == null || stampOfId[id] != stamp} path of
+     * {@code BPGraph.resync}, which only normalises; and it is structurally 0
+     * under {@code flood}, which never calls {@code updateMessagesInPlace} and
+     * rebuilds every marginal from scratch on every sweep instead
+     * (BP_BASELINE_REPAIR.md section 1.3). It cannot be used to compare
+     * flooding against the other schedules.
+     */
     public static long marginalResyncs;
+    /** resyncs because a message that was zero became nonzero */
+    public static long resyncResurrected;
+    /** resyncs because the rebuilt marginal had no mass left */
+    public static long resyncZeroMass;
+    /** resyncs because two scope positions are views of one variable */
+    public static long resyncDuplicateScope;
+    /** resyncs repairing a uniform-cavity fallback, which drops every other
+     *  factor's message from the product (BP_WARM_START_EXPERIMENT.md D4) */
+    public static long resyncCavityFallback;
     /** cavity distributions replaced by uniform because the quotient left the
      *  representable range or lost all its mass (warm start only, in practice) */
     public static long cavityFallbacks;
@@ -46,6 +66,30 @@ public final class BPStats {
     public static long bpNanos;
     /** nanoseconds spent building schedules (included in bpNanos) */
     public static long scheduleNanos;
+
+    /* warm start: re-establishing b(v) = prod_c local_c(v) at invocation entry */
+    /** entry passes run (one per warm invocation) */
+    public static long warmEntryRebuilds;
+    /** nanoseconds spent in them (included in bpNanos) */
+    public static long warmEntryNanos;
+    /** entry passes that found a variable with no mass left and fell back to a
+     *  full cold reset, which is the only invariant-preserving repair */
+    public static long warmEntryColdFallbacks;
+
+    /* incremental dirty seeding */
+    /** factors seeded dirty at entry, summed over invocations */
+    public static long dirtySeeded;
+    /** factors in the graph at entry, summed over invocations: the denominator */
+    public static long dirtySeedFactors;
+    /** invocations that had to seed everything (first on the path, or a cold
+     *  fallback), so the ratio above is not read as a steady state */
+    public static long dirtySeedFull;
+
+    /* the root damping tuning, which runs inside the timed region and outside
+     * the monitored loop, and with the reuse gate on can be most of all BP work */
+    public static long tuneDampingTrials;
+    public static long tuneDampingSweeps;
+    public static long tuneDampingNanos;
 
     /* structure of the last schedule built, for the diagnostic line */
     public static int lastFactors;
@@ -89,11 +133,26 @@ public final class BPStats {
                 + " bpSkipPruned=" + factorSkipsPruned
                 + " bpSkipFrozen=" + factorSkipsFrozen
                 + " bpMarginalResyncs=" + marginalResyncs
+                + " bpResyncResurrected=" + resyncResurrected
+                + " bpResyncZeroMass=" + resyncZeroMass
+                + " bpResyncDuplicateScope=" + resyncDuplicateScope
+                + " bpResyncCavityFallback=" + resyncCavityFallback
                 + " bpCavityFallbacks=" + cavityFallbacks
+                + " bpWarmEntryRebuilds=" + warmEntryRebuilds
+                + " bpWarmEntryMs=" + (warmEntryNanos / 1000000)
+                + " bpWarmEntryColdFallbacks=" + warmEntryColdFallbacks
+                + " bpDirtySeeded=" + dirtySeeded
+                + " bpDirtySeedFraction=" + (dirtySeedFactors == 0 ? 0.0 : (double) dirtySeeded / dirtySeedFactors)
+                + " bpDirtySeedFull=" + dirtySeedFull
+                + " bpTuneDampingTrials=" + tuneDampingTrials
+                + " bpTuneDampingSweeps=" + tuneDampingSweeps
+                + " bpTuneDampingMs=" + (tuneDampingNanos / 1000000)
                 + " bpSchedulesBuilt=" + schedulesBuilt
                 + " bpSchedulesReused=" + schedulesReused
                 + " bpMs=" + (bpNanos / 1000000)
                 + " bpScheduleMs=" + (scheduleNanos / 1000000)
+                + " bpScheduleShare=" + (bpNanos == 0 ? 0.0 : (double) scheduleNanos / bpNanos)
+                + " bpWarmEntryShare=" + (bpNanos == 0 ? 0.0 : (double) warmEntryNanos / bpNanos)
                 + " bpLastFactors=" + lastFactors
                 + " bpLastVars=" + lastVars
                 + " bpLastAcyclic=" + lastAcyclicFactors

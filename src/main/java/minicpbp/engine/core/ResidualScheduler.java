@@ -44,7 +44,7 @@ final class ResidualScheduler implements BPScheduler {
     }
 
     @Override
-    public void beginInvocation() {
+    public void beginInvocation(boolean fullDirty) {
         graph.rebuild(BPConfig.QUERY_ONLY);
         int n = graph.factorCount();
         if (heap.length < n) {
@@ -52,8 +52,14 @@ final class ResidualScheduler implements BPScheduler {
             posInHeap = new int[heap.length];
             priority = new double[heap.length];
         }
-        // every factor starts stale (the marginals were just reset or restored),
-        // ordered by the spanning forest so the first pass is the exact one
+        // Which factors start stale. Without incremental seeding that is all of
+        // them, because the marginals were just reset or restored and nothing
+        // records what changed; with it, only what changed since the last
+        // invocation on this path plus what that invocation left un-executed.
+        // Either way they are ordered by the spanning forest so the first pass
+        // is the exact one on an acyclic component.
+        if (BPConfig.INCREMENTAL_DIRTY) graph.dirtyChanged(fullDirty);
+        else graph.dirtyAll();
         heapSize = 0;
         for (int f = 0; f < n; f++) posInHeap[f] = -1;
         for (int i = 0; i < n; i++) {
@@ -62,11 +68,26 @@ final class ResidualScheduler implements BPScheduler {
                 BPStats.factorSkipsPruned++;
                 continue;
             }
-            // above any real residual (messages are probabilities), and ordered
-            // so that the first pass runs the forest from the leaves inwards,
-            // which is the exact pass on an acyclic component
+            if (!graph.isDirty(f)) {
+                BPStats.factorSkipsClean++;
+                continue;
+            }
+            // above any real residual (messages are probabilities, so a residual
+            // is at most 1), and ordered so that the first pass runs the forest
+            // from the leaves inwards, which is the exact pass on an acyclic
+            // component
             priority[f] = SEED_PRIORITY + i;
             push(f);
+        }
+    }
+
+    @Override
+    public void endInvocation() {
+        if (!BPConfig.INCREMENTAL_DIRTY) return;
+        // whatever is still queued was never executed against its current inputs
+        int n = graph.factorCount();
+        for (int f = 0; f < n; f++) {
+            graph.factorAt(f).setBpStale(posInHeap[f] >= 0 || graph.isPruned(f));
         }
     }
 

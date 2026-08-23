@@ -18,6 +18,7 @@
 
 package minicpbp.engine.core;
 
+import minicpbp.state.StateInt;
 import minicpbp.state.StateStack;
 import minicpbp.util.Procedure;
 import minicpbp.util.exception.InconsistencyException;
@@ -47,6 +48,16 @@ public class IntVarImpl implements IntVar {
     private StateStack<Constraint> constraints; //contains all constraints, allows us to get the failure count of all constraints applied to the variable
     private boolean isForBranching = false;
 
+    /**
+     * Incremental dirty seeding: the BP epoch current when this variable last
+     * changed (BP_WARM_START_EXPERIMENT.md section 1.3). Trailed, so that a
+     * backtrack restores the classification the ancestor had; an untrailed
+     * stamp would still be sound — too large only ever means "dirty" — but
+     * would report every variable the abandoned subtree touched as changed,
+     * which is most of them at exactly the nodes a failing search lives in.
+     */
+    private StateInt bpTouchStamp;
+
     private DomainListener domListener = new DomainListener() {
         @Override
         public void empty() {
@@ -60,6 +71,10 @@ public class IntVarImpl implements IntVar {
 
         @Override
         public void change() {
+            // every removal path of SparseSetDomain (remove, removeAllBut,
+            // removeBelow, removeAbove) funnels through change(), so this is a
+            // complete hook for "this variable's domain shrank"
+            bpTouchStamp.setValue(cp.bpEpoch());
             scheduleAll(onDomain);
         }
 
@@ -107,6 +122,9 @@ public class IntVarImpl implements IntVar {
         onBind = new StateStack<>(cp.getStateManager());
         onBounds = new StateStack<>(cp.getStateManager());
         constraints = new StateStack<>(cp.getStateManager());
+        // 0 is below the epoch of the first invocation (epochs start at 1), so a
+        // variable never touched is clean from the second invocation on
+        bpTouchStamp = cp.getStateManager().makeStateInt(0);
         cp.registerVar(this);
     }
 
@@ -325,6 +343,16 @@ public class IntVarImpl implements IntVar {
         while (iterator.hasNext())
             if (iterator.next().isActive()) sum++;
         return sum;
+    }
+
+    @Override
+    public int bpTouchStamp() {
+        return bpTouchStamp.value();
+    }
+
+    @Override
+    public void bpTouch() {
+        bpTouchStamp.setValue(cp.bpEpoch());
     }
 
     public int wDeg(){

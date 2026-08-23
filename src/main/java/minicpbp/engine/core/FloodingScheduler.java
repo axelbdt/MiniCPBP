@@ -27,7 +27,7 @@ public final class FloodingScheduler implements BPScheduler {
     }
 
     @Override
-    public void beginInvocation() {
+    public void beginInvocation(boolean fullDirty) {
     }
 
     @Override

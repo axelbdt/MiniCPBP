@@ -119,6 +119,28 @@ public interface Constraint {
     void contributeMarginal(IntVar base);
 
     /**
+     * Multiplies the current local belief into the marginals of every unbound
+     * variable of the scope: {@code contributeMarginal} for all of them at
+     * once. Used to re-establish {@code b(v) = prod_c local_c(v)} at the entry
+     * of a warm-started invocation, over the factors that are still active
+     * (BP_WARM_START_EXPERIMENT.md F1).
+     */
+    void contributeMarginals();
+
+    /**
+     * True while the message this constraint has stored is not the message it
+     * would compute from its current inputs — because the previous invocation
+     * ended before executing it, or because it has never run. Trailed, so it
+     * describes the current path. Only read under incremental dirty seeding
+     * (BP_WARM_START_EXPERIMENT.md section 1.3), where forgetting it would be
+     * unsound rather than merely imprecise.
+     */
+    boolean bpStale();
+
+    /** @see #bpStale() */
+    void setBpStale(boolean stale);
+
+    /**
      * Sets the local belief to uniform distribution.
      */
     void resetLocalBelief();

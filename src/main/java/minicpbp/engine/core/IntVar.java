@@ -340,4 +340,21 @@ public interface IntVar {
 
     /** Returns the base (non-view) variable underlying this variable or view. */
     default IntVar getBaseVar() { return this; }
+
+    /**
+     * Incremental dirty seeding (BP_WARM_START_EXPERIMENT.md section 1.3): the
+     * BP epoch current when this variable last changed, either because its
+     * domain shrank or because a factor holding it was deactivated and is
+     * therefore about to be divided out of its marginal.
+     * <p>
+     * Only ever called on a base variable — {@code BPGraph} takes variable
+     * identity on {@code getBaseVar()}, and a view shares the domain of the
+     * variable it views, so the base carries the stamp. The defaults here are
+     * the safe answers for anything that is not a base variable: report the
+     * largest possible stamp, i.e. "assume changed", and record nothing.
+     */
+    default int bpTouchStamp() { return Integer.MAX_VALUE; }
+
+    /** @see #bpTouchStamp() */
+    default void bpTouch() { }
 }

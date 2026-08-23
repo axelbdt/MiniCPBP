@@ -546,6 +546,11 @@ public final class BranchingScheme {
             a.setForBranching(true);
         if(x[0].getSolver().getWeighingScheme() == ConstraintWeighingScheme.ARITY)
             x[0].getSolver().computeMinArity();
+        // so a decision-directed stopping rule samples the decision THIS
+        // heuristic takes: the engine's own variable stack is in registration
+        // order while this array is id-sorted, and both break tied entropies by
+        // array order (BP_WARM_START_EXPERIMENT.md F7)
+        x[0].getSolver().setBranchingOrder(x);
         return () -> {
             IntVar xs = selectMin(x,
                     xi -> xi.size() > 1,

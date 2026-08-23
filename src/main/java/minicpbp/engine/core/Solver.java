@@ -237,6 +237,39 @@ public interface Solver {
     void notifyDomainOp(IntVar x, DomainOpKind kind, int v);
 
     /**
+     * Incremental dirty seeding (BP_WARM_START_EXPERIMENT.md section 1.3).
+     * A monotone counter, incremented once per <em>real</em> BP invocation —
+     * never on the reuse-gate skip path, or the changes accumulated across
+     * skipped nodes would be misclassified as already seen.
+     *
+     * @return the current BP epoch
+     */
+    int bpEpoch();
+
+    /**
+     * The epoch of the last real BP invocation <em>on the current path</em>.
+     * Trailed: an untrailed watermark would, after a backtrack, name the last
+     * invocation anywhere rather than the last one on this path, and every
+     * change made since the ancestor's invocation would be classified clean.
+     * That is the one way the seeding can be unsound.
+     *
+     * @return that epoch, or a value below every stamp when BP has not yet run
+     * on this path
+     */
+    int bpPathEpoch();
+
+    /**
+     * Records the variable array the branching heuristic actually scans, so
+     * that a decision-directed stopping rule samples the decision search will
+     * take. The engine's own {@code variables} stack is in registration order
+     * while the heuristics scan an id-sorted array, and both break ties by
+     * array order, so on tied entropies they select different variables.
+     *
+     * @param x the array, in the order the heuristic scans it
+     */
+    void setBranchingOrder(IntVar[] x);
+
+    /**
      * Registers the variable for belief propagation.
      *
      * @param x the variable

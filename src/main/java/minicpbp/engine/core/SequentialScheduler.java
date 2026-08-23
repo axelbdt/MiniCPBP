@@ -33,7 +33,7 @@ final class SequentialScheduler implements BPScheduler {
     }
 
     @Override
-    public void beginInvocation() {
+    public void beginInvocation(boolean fullDirty) {
         graph.rebuild(false);
     }
 

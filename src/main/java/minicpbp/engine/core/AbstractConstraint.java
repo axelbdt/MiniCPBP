@@ -44,6 +44,8 @@ public abstract class AbstractConstraint implements Constraint {
     private final Solver cp;
     private boolean scheduled = false;
     private final StateBool active;
+    /** incremental dirty seeding: is the stored message stale on this path? */
+    private final StateBool bpStale;
 
     private StateDouble[][] localBelief;
     private double[][] outsideBelief;
@@ -53,6 +55,7 @@ public abstract class AbstractConstraint implements Constraint {
     private double[][] cavityBelief;  // variable-to-constraint message before damping
     private double[][] prevLocalBelief; // local belief as it was before updateBelief()
     private double[] msgResidual;     // per scope position, how far the last message moved
+    private boolean[] cavityUniform;  // per scope position, was the cavity replaced by uniform?
     private boolean duplicateScope;   // two scope positions share one base variable
     private double weight; // an optional nonnegative weight applied to the constraint's local belief
     protected Belief beliefRep;
@@ -70,6 +73,9 @@ public abstract class AbstractConstraint implements Constraint {
     public AbstractConstraint(Solver cp, IntVar[] vars) {
         this.cp = cp;
         active = cp.getStateManager().makeStateBool(true);
+        // nothing has been computed yet, so the stored message (uniform) is not
+        // the message this factor would produce: it must run at least once
+        bpStale = cp.getStateManager().makeStateBool(true);
         beliefRep = cp.getBeliefRep();
         this.vars = new IntVar[vars.length];
         System.arraycopy(vars,0,this.vars,0,vars.length); // required if constraint sets up offseted vars in the same array
@@ -160,11 +166,28 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     public void setActive(boolean active) {
+        if (!active && this.active.value() && minicpbp.util.BPConfig.INCREMENTAL_DIRTY) {
+            // A deactivated factor is divided out of every neighbour's marginal
+            // by the warm-entry rebuild, so every scope variable's cavity for
+            // every OTHER incident factor changes. Entailment is detected inside
+            // this constraint's own propagate(), so only the trigger variable is
+            // guaranteed to have changed its domain: mark the whole scope
+            // (BP_WARM_START_EXPERIMENT.md section 1.3).
+            for (int i = 0; i < vars.length; i++) vars[i].getBaseVar().bpTouch();
+        }
         this.active.setValue(active);
     }
 
     public boolean isActive() {
         return active.value();
+    }
+
+    public boolean bpStale() {
+        return bpStale.value();
+    }
+
+    public void setBpStale(boolean stale) {
+        bpStale.setValue(stale);
     }
 
     protected void setExactWCounting(boolean exact) {
@@ -370,6 +393,12 @@ public abstract class AbstractConstraint implements Constraint {
      * rather than zero, so "uniform" is used instead;</li>
      * <li>the reconstructed marginal has no mass: {@code resync} again.</li>
      * </ul>
+     * In the second case the uniform vector is the right <em>input</em> for the
+     * weighted counter but it is not the cavity, so publishing
+     * {@code cavity * local} would drop every other factor's message from the
+     * product and break the invariant for the rest of the invocation. That
+     * variable is therefore resynced too, counted as
+     * {@code BPStats.resyncCavityFallback} (BP_WARM_START_EXPERIMENT.md D4).
      *
      * @param resync recomputes a variable's marginal from all its factors, or
      *               null to accept the uniform-cavity approximation
@@ -382,6 +411,7 @@ public abstract class AbstractConstraint implements Constraint {
             cavityBelief = new double[vars.length][];
             prevLocalBelief = new double[vars.length][];
             msgResidual = new double[vars.length];
+            cavityUniform = new boolean[vars.length];
             for (int i = 0; i < vars.length; i++) {
                 cavityBelief[i] = new double[outsideBelief[i].length];
                 prevLocalBelief[i] = new double[outsideBelief[i].length];
@@ -402,6 +432,7 @@ public abstract class AbstractConstraint implements Constraint {
         // phase 1: read the cavity distributions, remembering the messages that
         // are about to be overwritten
         for (int i = 0; i < vars.length; i++) {
+            cavityUniform[i] = false;
             if (vars[i].isBound()) {
                 setOutsideBelief(i, vars[i].min(), beliefRep.one());
                 continue;
@@ -444,6 +475,14 @@ public abstract class AbstractConstraint implements Constraint {
             }
             if (bad || empty) {
                 minicpbp.util.BPStats.cavityFallbacks++;
+                // The uniform answer is the right input for a weighted counter,
+                // but it is NOT the cavity: writing cavity*local into the
+                // marginal then drops every other factor's message from the
+                // product, which breaks b(v) = prod_c local_c(v) by a
+                // non-constant factor and leaves it broken in the trail for the
+                // whole subtree — D2's mechanism in miniature
+                // (BP_WARM_START_EXPERIMENT.md D4). Phase 3 resyncs instead.
+                cavityUniform[i] = true;
                 double uniform = beliefRep.divide(beliefRep.one(), (double) s);
                 for (int j = 0; j < s; j++) setOutsideBelief(i, domainValues[j], uniform);
             } else {
@@ -503,8 +542,12 @@ public abstract class AbstractConstraint implements Constraint {
                 vars[i].setMarginal(val, m);
             }
             if (msgResidual[i] > residual) residual = msgResidual[i];
-            if (resync != null && (resurrected || mass <= 0.0 || duplicateScope)) {
+            if (resync != null && (resurrected || mass <= 0.0 || duplicateScope || cavityUniform[i])) {
                 minicpbp.util.BPStats.marginalResyncs++;
+                if (resurrected) minicpbp.util.BPStats.resyncResurrected++;
+                if (mass <= 0.0) minicpbp.util.BPStats.resyncZeroMass++;
+                if (duplicateScope) minicpbp.util.BPStats.resyncDuplicateScope++;
+                if (cavityUniform[i]) minicpbp.util.BPStats.resyncCavityFallback++;
                 resync.resync(vars[i].getBaseVar());
             } else if (mass < SCALE_FLOOR || mass > SCALE_CEIL) {
                 vars[i].normalizeMarginals(); // keep the product away from underflow
@@ -537,6 +580,23 @@ public abstract class AbstractConstraint implements Constraint {
     public void contributeMarginal(IntVar base) {
         for (int i = 0; i < vars.length; i++) {
             if (vars[i].isBound() || vars[i].getBaseVar() != base) continue;
+            int s = vars[i].fillArray(domainValues);
+            for (int j = 0; j < s; j++) {
+                int val = domainValues[j];
+                vars[i].receiveMessage(val, beliefRep.pow(localBelief(i, val), this.weight));
+            }
+        }
+    }
+
+    /**
+     * {@code contributeMarginal} for the whole scope at once. Deliberately the
+     * same arithmetic, in the same order, as {@code BPGraph.resync} performs
+     * one variable at a time, so that the warm-entry rebuild and a resync of
+     * the same variable produce the same number.
+     */
+    public void contributeMarginals() {
+        for (int i = 0; i < vars.length; i++) {
+            if (vars[i].isBound()) continue; // a bound variable holds no product
             int s = vars[i].fillArray(domainValues);
             for (int j = 0; j < s; j++) {
                 int val = domainValues[j];

@@ -442,6 +442,80 @@ final class BPGraph implements MarginalResync {
             dirty[f] = !pruned[f];
             if (dirty[f]) nDirty++;
         }
+        BPStats.dirtySeeded += nDirty;
+        BPStats.dirtySeedFactors += nFactors;
+        BPStats.dirtySeedFull++;
+    }
+
+    /**
+     * Seeds the dirty set from what actually changed, instead of from
+     * everything (BP_WARM_START_EXPERIMENT.md section 1.3). Sound only because
+     * a warm start keeps the stored messages: skipping factor F is exact iff
+     * F's stored {@code localBelief} is the message F would compute from its
+     * current inputs, and F's inputs are the cavities and the domains of its
+     * scope. So F must be seeded iff
+     * <ul>
+     * <li>some scope variable changed since the last invocation on this path —
+     * its domain shrank, or a factor holding it was deactivated and the entry
+     * rebuild has divided that factor out of its marginal; or</li>
+     * <li>the previous invocation on this path ended before executing F. That
+     * set is <em>not</em> recoverable from this class: {@code rebuild}
+     * renumbers everything and forgets the dirty bits, so it is kept on the
+     * constraint, trailed. Omitting it would be unsound, not merely
+     * imprecise.</li>
+     * </ul>
+     * The first invocation on a path (nothing computed yet) seeds everything.
+     */
+    void dirtyChanged(boolean forceFull) {
+        int pathEpoch = cp.bpPathEpoch();
+        if (forceFull || pathEpoch <= 0) {
+            dirtyAll();
+            return;
+        }
+        nDirty = 0;
+        for (int f = 0; f < nFactors; f++) dirty[f] = false;
+        for (int f = 0; f < nFactors; f++) {
+            Constraint c = factor[f];
+            if (c.bpStale()) {
+                makeDirty(f);
+                continue;
+            }
+            // The WHOLE declared scope, bound variables included, and not the
+            // effective scope: rebuild() drops a bound variable from the graph,
+            // and binding a variable is exactly what changes this factor's
+            // messages to the rest of its scope. Walking incidence instead
+            // would silently miss every factor of the variable the last
+            // decision assigned. O(sum arity), the same order as rebuild's own
+            // loop.
+            IntVar[] scope = c.getScope();
+            for (int i = 0; i < scope.length; i++) {
+                // >= and not >: the epoch is incremented inside the invocation,
+                // so the removals made by the decision and the propagation that
+                // follow it carry the epoch this watermark holds
+                if (scope[i].getBaseVar().bpTouchStamp() >= pathEpoch) {
+                    makeDirty(f);
+                    break;
+                }
+            }
+        }
+        BPStats.dirtySeeded += nDirty;
+        BPStats.dirtySeedFactors += nFactors;
+    }
+
+    /**
+     * Records, for the next invocation on this path, which factors this one
+     * left un-executed. Called at the end of an invocation, and only under
+     * incremental seeding: it is a trailed write per factor whose state
+     * changed, which buys nothing when the next invocation is going to seed
+     * everything anyway.
+     */
+    void persistStale() {
+        for (int f = 0; f < nFactors; f++) {
+            // a pruned factor is never executed, so it stays stale: it must run
+            // if it ever stops being pruned. It also starts stale, so this
+            // writes nothing for it
+            factor[f].setBpStale(dirty[f] || pruned[f]);
+        }
     }
 
     boolean isDirty(int f) {
@@ -512,6 +586,14 @@ final class BPGraph implements MarginalResync {
     public void resync(IntVar base) {
         Integer id = idOfVar.get(base);
         if (id == null || stampOfId[id] != stamp) {
+            // Not a node of the current effective graph, so the product cannot
+            // be rebuilt and this only normalises: the marginal is then not the
+            // product of the messages it receives. Unreachable in a normal
+            // invocation — resync is called on an unbound variable of an active
+            // factor of this graph — but if it is reached, the invariant is
+            // broken with nothing recording it, and incremental seeding would
+            // skip the factors that read this variable. Record it as changed.
+            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY) base.bpTouch();
             base.normalizeMarginals();
             return;
         }
