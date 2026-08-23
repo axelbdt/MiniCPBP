@@ -71,10 +71,18 @@ public class IntVarImpl implements IntVar {
 
         @Override
         public void change() {
-            // every removal path of SparseSetDomain (remove, removeAllBut,
+            // Every removal path of SparseSetDomain (remove, removeAllBut,
             // removeBelow, removeAbove) funnels through change(), so this is a
-            // complete hook for "this variable's domain shrank"
-            bpTouchStamp.setValue(cp.bpEpoch());
+            // complete hook for "this variable's domain shrank".
+            //
+            // Guarded on a static final flag, so the JIT folds the branch away
+            // when incremental seeding is off. It matters: this is the hottest
+            // path in the solver, the write allocates a trail entry per variable
+            // per level, and leaving it unconditional would slow down the
+            // support-propagation arms -- which are the BASELINE the belief arms
+            // are measured against. An overhead that only the baseline pays is
+            // not an overhead, it is a biased measurement.
+            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY) bpTouchStamp.setValue(cp.bpEpoch());
             scheduleAll(onDomain);
         }
 

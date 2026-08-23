@@ -459,7 +459,8 @@ public class MiniCP implements Solver {
             // the seeding must read the watermark of the PREVIOUS invocation on
             // this path, so the update below happens after beginInvocation
             sched.beginInvocation(fullDirty);
-            bpPathEpoch.setValue(bpEpoch);
+            // trailed write, so also guarded: nothing reads it otherwise
+            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY) bpPathEpoch.setValue(bpEpoch);
             if (minicpbp.util.BPConfig.DUMP_GRAPH && !graphDumped && bpGraph != null) {
                 graphDumped = true;
                 // stderr: harnesses redirect stdout while solving
