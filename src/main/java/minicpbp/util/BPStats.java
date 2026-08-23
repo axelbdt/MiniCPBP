@@ -35,6 +35,9 @@ public final class BPStats {
     public static long factorSkipsFrozen;
     /** exact marginal recomputations forced by a zero-valued incoming message */
     public static long marginalResyncs;
+    /** cavity distributions replaced by uniform because the quotient left the
+     *  representable range or lost all its mass (warm start only, in practice) */
+    public static long cavityFallbacks;
     /** schedules built (a rebuild is one dependency-graph construction) */
     public static long schedulesBuilt;
     /** schedules reused without rebuilding */
@@ -86,6 +89,7 @@ public final class BPStats {
                 + " bpSkipPruned=" + factorSkipsPruned
                 + " bpSkipFrozen=" + factorSkipsFrozen
                 + " bpMarginalResyncs=" + marginalResyncs
+                + " bpCavityFallbacks=" + cavityFallbacks
                 + " bpSchedulesBuilt=" + schedulesBuilt
                 + " bpSchedulesReused=" + schedulesReused
                 + " bpMs=" + (bpNanos / 1000000)

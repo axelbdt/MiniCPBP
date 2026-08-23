@@ -429,6 +429,19 @@ public class MiniCP implements Solver {
                 }
                 prevOutsideBeliefRecorded = false;
             }
+            else if (minicpbp.util.BPConfig.WARM_START) {
+                // Warm start keeps the restored marginals, but propagation since
+                // the last invocation can have removed every value that carried
+                // mass, leaving a zero vector no amount of message passing
+                // recovers from. Renormalise, and start from uniform exactly
+                // where the mass is gone.
+                iterator = variables.iterator();
+                while (iterator.hasNext()) {
+                    IntVar v = iterator.next();
+                    v.normalizeMarginals();
+                    if (beliefRep.isZero(v.maxMarginal())) v.resetMarginals();
+                }
+            }
             BPScheduler sched = scheduler();
             sched.beginInvocation();
             if (minicpbp.util.BPConfig.DUMP_GRAPH && !graphDumped && bpGraph != null) {
@@ -437,6 +450,9 @@ public class MiniCP implements Solver {
                 System.err.println("c bp graph: " + bpGraph.describe());
             }
             final double[] entropy = {1.0};
+            decisionVar = null;
+            decisionVal = Integer.MIN_VALUE;
+            stableDecisionSweeps = 0;
             sched.run(beliefPropaMaxIter, iter -> {
                 Log.bpIteration(iter, variables);
                 double previousEntropy = entropy[0];
@@ -452,6 +468,8 @@ public class MiniCP implements Solver {
                     return true;
                 }
                 if (minicpbp.util.BPConfig.NO_EARLY_STOP) return false; // measure at a fixed budget
+                if (minicpbp.util.BPConfig.STABLE_DECISION_SWEEPS > 0 && decisionSettled())
+                    return true;
                 // CAVEAT: this one only really makes sense if we are branching on the min entropy or max marginal (strength) variable
                 if (smallEntropy <= MIN_VAR_ENTROPY) { // at least one variable with low uncertainty about the value it should take
                     return true;
@@ -657,6 +675,45 @@ public class MiniCP implements Solver {
             }
         }
         return (nbUnboundBranchingVar == 0 ? 0.0 : sumNormalizedEntropy / nbUnboundBranchingVar);
+    }
+
+    /* decision-directed stopping (BP_SCHEDULING.md 1.4) */
+    private IntVar decisionVar;
+    private int decisionVal;
+    private int stableDecisionSweeps;
+
+    /**
+     * True once the branching decision a min-entropy heuristic would take has
+     * been the same for {@code BPConfig.STABLE_DECISION_SWEEPS} consecutive
+     * sweeps.
+     * <p>
+     * The shipped rule stops the loop when some variable's entropy falls below
+     * MIN_VAR_ENTROPY, which is a statement about how confident BP has become,
+     * not about whether the decision has settled: measurement showed it stops
+     * whichever schedule is most overconfident, while the marginals are still
+     * far from a fixed point. What the solver needs is the decision, so this
+     * watches the decision.
+     */
+    private boolean decisionSettled() {
+        IntVar best = null;
+        double bestEntropy = Double.MAX_VALUE;
+        Iterator<IntVar> iterator = variables.iterator();
+        while (iterator.hasNext()) {
+            IntVar v = iterator.next();
+            if (v.isBound() || !v.isForBranching()) continue;
+            double h = v.entropy();
+            if (h < bestEntropy) {
+                bestEntropy = h;
+                best = v;
+            }
+        }
+        if (best == null) return true; // nothing left to decide
+        int val = best.valueWithMaxMarginal();
+        if (best == decisionVar && val == decisionVal) stableDecisionSweeps++;
+        else stableDecisionSweeps = 0;
+        decisionVar = best;
+        decisionVal = val;
+        return stableDecisionSweeps >= minicpbp.util.BPConfig.STABLE_DECISION_SWEEPS;
     }
 
     /**

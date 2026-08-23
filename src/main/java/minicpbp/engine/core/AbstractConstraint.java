@@ -53,6 +53,7 @@ public abstract class AbstractConstraint implements Constraint {
     private double[][] cavityBelief;  // variable-to-constraint message before damping
     private double[][] prevLocalBelief; // local belief as it was before updateBelief()
     private double[] msgResidual;     // per scope position, how far the last message moved
+    private boolean duplicateScope;   // two scope positions share one base variable
     private double weight; // an optional nonnegative weight applied to the constraint's local belief
     protected Belief beliefRep;
     private int[] ofs;
@@ -376,6 +377,18 @@ public abstract class AbstractConstraint implements Constraint {
                 cavityBelief[i] = new double[outsideBelief[i].length];
                 prevLocalBelief[i] = new double[outsideBelief[i].length];
             }
+            // Two positions of one scope may be views of the same variable
+            // (c(x, minus(x))), and then they share a marginal: writing the
+            // second one would discard the first message instead of
+            // multiplying it in. Rare, and the scope never changes, so it is
+            // detected once and those marginals are rebuilt exactly.
+            java.util.Set<IntVar> seen = new java.util.HashSet<>();
+            for (int i = 0; i < vars.length; i++) {
+                if (!seen.add(vars[i].getBaseVar())) {
+                    duplicateScope = true;
+                    break;
+                }
+            }
         }
         // phase 1: read the cavity distributions, remembering the messages that
         // are about to be overwritten
@@ -400,12 +413,32 @@ public abstract class AbstractConstraint implements Constraint {
             // every step, which keeps the scale bounded, and the schedule
             // normalises once per sweep for the engine's entropy tests).
             if (zeroMessage) vars[i].normalizeMarginals();
+            // The cavity is a quotient, so it can leave the representable range
+            // where the message being divided out is denormal, and it can lose
+            // all its mass where a domain change removed every value that
+            // carried any. Both give a vector that carries no information, and
+            // feeding one to a weighted counter produces NaN rather than zero
+            // (setLocalBelief deliberately does not mask NaN, and SumDC's
+            // forward/backward DP propagates it). Answer "uniform" instead,
+            // which is what IntVar.sendMessage already answers for a single
+            // zero-valued message. Both cases need warm-started marginals to
+            // be reachable, and both are counted.
+            boolean bad = false, empty = true;
             for (int j = 0; j < s; j++) {
                 int val = domainValues[j];
-                setOutsideBelief(i, val, vars[i].sendMessage(val, prevLocalBelief[i][val - ofs[i]]));
+                double c = vars[i].sendMessage(val, prevLocalBelief[i][val - ofs[i]]);
+                if (!isFinite(beliefRep.rep2std(c))) bad = true;
+                else if (!beliefRep.isZero(c)) empty = false;
+                setOutsideBelief(i, val, c);
             }
-            normalizeBelief(i, (j, val) -> outsideBelief(j, val),
-                    (j, val, b) -> setOutsideBelief(j, val, b));
+            if (bad || empty) {
+                minicpbp.util.BPStats.cavityFallbacks++;
+                double uniform = beliefRep.divide(beliefRep.one(), (double) s);
+                for (int j = 0; j < s; j++) setOutsideBelief(i, domainValues[j], uniform);
+            } else {
+                normalizeBelief(i, (j, val) -> outsideBelief(j, val),
+                        (j, val, b) -> setOutsideBelief(j, val, b));
+            }
             for (int j = 0; j < s; j++) {
                 int val = domainValues[j];
                 cavityBelief[i][val - ofs[i]] = outsideBelief(i, val);
@@ -446,10 +479,20 @@ public abstract class AbstractConstraint implements Constraint {
                 if (beliefRep.isZero(old) && !beliefRep.isZero(b)) resurrected = true;
                 double m = beliefRep.multiply(cavityBelief[i][val - ofs[i]], b);
                 mass += beliefRep.rep2std(m);
+                if (Double.isNaN(m)) {
+                    // name the producer: IntVar.setMarginal only knows the
+                    // variable, and a NaN here means the constraint's belief
+                    // circuit produced one (setLocalBelief deliberately does
+                    // not mask NaN, only negatives)
+                    throw new ArithmeticException("NaN message from "
+                            + getClass().getSimpleName() + " (" + getName() + ") to "
+                            + vars[i].getName() + " on value " + val
+                            + ": cavity=" + cavityBelief[i][val - ofs[i]] + " localBelief=" + b);
+                }
                 vars[i].setMarginal(val, m);
             }
             if (msgResidual[i] > residual) residual = msgResidual[i];
-            if (resync != null && (resurrected || mass <= 0.0)) {
+            if (resync != null && (resurrected || mass <= 0.0 || duplicateScope)) {
                 minicpbp.util.BPStats.marginalResyncs++;
                 resync.resync(vars[i].getBaseVar());
             } else if (mass < SCALE_FLOOR || mass > SCALE_CEIL) {
@@ -464,6 +507,11 @@ public abstract class AbstractConstraint implements Constraint {
      * position {@code i} moved, in standard representation. Zero before the
      * first in-place update.
      */
+    /** java 8 has no Double.isFinite on the primitive path we want inlined */
+    private static boolean isFinite(double v) {
+        return !Double.isNaN(v) && !Double.isInfinite(v);
+    }
+
     public double messageResidual(int i) {
         return msgResidual == null ? 0.0 : msgResidual[i];
     }
