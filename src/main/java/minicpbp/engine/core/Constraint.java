@@ -92,6 +92,33 @@ public interface Constraint {
     void sendMessages();
 
     /**
+     * In-place counterpart of {@code receiveMessages()} then
+     * {@code sendMessages()}: the new outgoing messages are published into the
+     * marginals of the scope at once, so a factor executed later in the same
+     * sweep reads them (Gauss-Seidel rather than Jacobi).
+     *
+     * @param resync rebuilds a marginal from all the messages it receives,
+     *               for the cases where the incremental update cannot
+     *               reconstruct it; may be null
+     * @return the largest absolute change of any message sent, in standard
+     * representation
+     */
+    double updateMessagesInPlace(MarginalResync resync);
+
+    /**
+     * How far the message last sent to the variable at scope position
+     * {@code i} moved, in standard representation.
+     */
+    double messageResidual(int i);
+
+    /**
+     * Multiplies the current local belief into the marginals of the scope
+     * variables whose base variable is {@code base}: the send half of
+     * {@code sendMessages()}, without the weighted counting.
+     */
+    void contributeMarginal(IntVar base);
+
+    /**
      * Sets the local belief to uniform distribution.
      */
     void resetLocalBelief();

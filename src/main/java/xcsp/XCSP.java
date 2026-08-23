@@ -82,6 +82,15 @@ public class XCSP implements XCallbacks2 {
 		return implem;
 	}
 
+	/**
+	 * The solver holding the model, so that a probe can run propagation or
+	 * belief propagation on it directly instead of through a search
+	 * (experiment/java/exp/SchedBench.java).
+	 */
+	public Solver getSolver() {
+		return minicp;
+	}
+
 	public XCSP(String fileName) throws Exception {
 		this.fileName = fileName;
 		hasFailed = false;

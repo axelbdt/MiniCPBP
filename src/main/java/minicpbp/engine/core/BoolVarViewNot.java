@@ -44,6 +44,11 @@ public class BoolVarViewNot implements BoolVar {
         x.assign(b ? 0 : 1);
     }
 
+    // this view reads and writes the marginals of x (marginal(v) = x.marginal(1-v)),
+    // so the BP scheduler must treat the two as one node of the factor graph
+    @Override
+    public IntVar getBaseVar() { return x.getBaseVar(); }
+
     @Override
     public boolean isTrue() {
         // 2026-08-18 fix: was `max() == 0`, i.e. the test for FALSE.

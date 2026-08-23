@@ -99,6 +99,13 @@ public class MiniCP implements Solver {
     private long trigger = 0;
     private long potentialTrigger = 0;
 
+    // BP scheduling (BP_SCHEDULING.md phase 0.1): the schedule is a policy, not
+    // a property of the engine. The default is FloodingScheduler, which is the
+    // historical synchronous sweep unchanged.
+    private BPGraph bpGraph;
+    private BPScheduler scheduler;
+    private boolean graphDumped = false;
+
     public MiniCP(StateManager sm) {
         this.sm = sm;
         variables = new StateStack<>(sm);
@@ -117,6 +124,41 @@ public class MiniCP implements Solver {
 
     public long trigger() {return trigger;}
     public long potentialTrigger() {return potentialTrigger;}
+
+    /**
+     * The BP schedule in force, created on first use from
+     * -Dminicpbp.bp.schedule (default: the historical flooding sweep).
+     */
+    private BPScheduler scheduler() {
+        if (scheduler == null) {
+            minicpbp.util.BPStats.install();
+            switch (minicpbp.util.BPConfig.SCHEDULE) {
+                case FLOOD:
+                    scheduler = new FloodingScheduler(this);
+                    break;
+                case SEQ:
+                    scheduler = new SequentialScheduler(bpGraph(), false);
+                    break;
+                case SEQFB:
+                    scheduler = new SequentialScheduler(bpGraph(), true);
+                    break;
+                case TOPO:
+                    scheduler = new TopoScheduler(bpGraph());
+                    break;
+                case RESIDUAL:
+                    scheduler = new ResidualScheduler(bpGraph());
+                    break;
+                default:
+                    scheduler = new FloodingScheduler(this);
+            }
+        }
+        return scheduler;
+    }
+
+    private BPGraph bpGraph() {
+        if (bpGraph == null) bpGraph = new BPGraph(this);
+        return bpGraph;
+    }
 
     @Override
     public StateManager getStateManager() {
@@ -309,6 +351,15 @@ public class MiniCP implements Solver {
      */
     @Override
     public void beliefPropa() {
+        long t0 = System.nanoTime();
+        try {
+            beliefPropaImpl();
+        } finally {
+            minicpbp.util.BPStats.bpNanos += System.nanoTime() - t0;
+        }
+    }
+
+    private void beliefPropaImpl() {
  //       System.out.println(variables.size()+" variables");
  //       System.out.println(constraints.size()+" constraints");
         Constraint c;
@@ -319,6 +370,7 @@ public class MiniCP implements Solver {
             sum += iterator.next().size();
         }
         potentialTrigger++;
+        minicpbp.util.BPStats.calls++;
         if (!ALWAYS_RUN_BP && sum >= (1.0 - beliefUpdateThreshold) * sumDomainSizes.value()) { // trigger BP only if domains sufficiently changed
             // 2026-08-19 (TODO.md item 3 diagnosis): renormalizing on the
             // reuse path is not idempotent in floating point (v / sum(v)
@@ -338,6 +390,7 @@ public class MiniCP implements Solver {
         }
         else {
             trigger++;
+            minicpbp.util.BPStats.invocations++;
             sumDomainSizes.setValue(sum);
         }
         notifyBeliefPropa();
@@ -346,7 +399,11 @@ public class MiniCP implements Solver {
                 BPtuneDamping();
                 tuneDamping = false;
             }
-            if (resetMarginalsBeforeBP) {
+            // next.md P1a: on this branch the restored (reversible, and thus
+            // correctly backtracked) marginals and local beliefs are thrown
+            // away and BP reconverges from uniform. WARM_START keeps them and
+            // continues from there instead.
+            if (resetMarginalsBeforeBP && !minicpbp.util.BPConfig.WARM_START) {
                 // start afresh at each search-tree node
                 iterator = variables.iterator();
                 while (iterator.hasNext()) {
@@ -372,13 +429,19 @@ public class MiniCP implements Solver {
                 }
                 prevOutsideBeliefRecorded = false;
             }
-            double previousEntropy, currentEntropy = 1.0;
-            int iter;
-            for (iter = 1; iter <= beliefPropaMaxIter; iter++) {
-                BPiteration();
+            BPScheduler sched = scheduler();
+            sched.beginInvocation();
+            if (minicpbp.util.BPConfig.DUMP_GRAPH && !graphDumped && bpGraph != null) {
+                graphDumped = true;
+                // stderr: harnesses redirect stdout while solving
+                System.err.println("c bp graph: " + bpGraph.describe());
+            }
+            final double[] entropy = {1.0};
+            sched.run(beliefPropaMaxIter, iter -> {
                 Log.bpIteration(iter, variables);
-                previousEntropy = currentEntropy;
-                currentEntropy = problemEntropy();
+                double previousEntropy = entropy[0];
+                double currentEntropy = problemEntropy();
+                entropy[0] = currentEntropy;
                 double smallEntropy = smallestVariableEntropy();
                 if (dampingMessages())
                     prevOutsideBeliefRecorded = true;
@@ -386,20 +449,16 @@ public class MiniCP implements Solver {
                 Log.modelEntropy(variables, nbBranchingVariables());
                 // stopping criteria
                 if (currentEntropy == 0) { // either all branching vars are bound or BP says there's no solution
-                    break;
+                    return true;
                 }
+                if (minicpbp.util.BPConfig.NO_EARLY_STOP) return false; // measure at a fixed budget
                 // CAVEAT: this one only really makes sense if we are branching on the min entropy or max marginal (strength) variable
                 if (smallEntropy <= MIN_VAR_ENTROPY) { // at least one variable with low uncertainty about the value it should take
-                    break;
+                    return true;
                 }
-                if ((iter > 1) /* give it a chance to kick in */ && (currentEntropy == previousEntropy)) { // marginals probably did not change either (and won't in the future)
-                    break;
-                }
- //               if ((iter > 2) /* give it a chance to stabilize */ && (currentEntropy - previousEntropy > ENTROPY_TOLERANCE)) { // entropy actually increased
- //                   break;
- //               }
-            }
-//            System.out.println("after "+iter+" BP iterations");
+                // marginals probably did not change either (and won't in the future)
+                return (iter > 1) /* give it a chance to kick in */ && (currentEntropy == previousEntropy);
+            });
         } catch (InconsistencyException e) {
             // empty the queue and unset the scheduled status
             while (!propagationQueue.isEmpty())
@@ -417,7 +476,7 @@ public class MiniCP implements Solver {
         setDamp(false);
         Constraint c;
         try {
-            if (resetMarginalsBeforeBP) {
+            if (resetMarginalsBeforeBP && !minicpbp.util.BPConfig.WARM_START) {
                 // start afresh at each search-tree node
                 Iterator<IntVar> iterator = variables.iterator();
                 while (iterator.hasNext()) {
@@ -526,30 +585,20 @@ public class MiniCP implements Solver {
     /**
      * a single iteration of Belief Propagation:
      * from variables to constraints, and then from constraints to variables
+     * <p>
+     * Used by the paths that must stay on the synchronous sweep whatever
+     * schedule is configured: {@code vanillaBP} (documented as
+     * no-bells-and-whistles BP) and {@code BPtuneDamping}, whose oscillation
+     * test is calibrated on flooding and whose outcome should not become a
+     * function of the schedule under measurement.
      */
     private void BPiteration() {
-        Constraint c;
-        Iterator<Constraint> iteratorC = constraints.iterator();
-        while (iteratorC.hasNext()) {
-            c = iteratorC.next();
-            if (c.isActive())
-                c.receiveMessages();
-        }
-        Iterator<IntVar> iterator = variables.iterator();
-        while (iterator.hasNext()) {
-            iterator.next().resetMarginals(); // prepare to receive all the messages from constraints
-        }
-       iteratorC = constraints.iterator();
-        while (iteratorC.hasNext()) {
-            c = iteratorC.next();
-            if (c.isActive())
-                c.sendMessages();
-        }
-        iterator = variables.iterator();
-        while (iterator.hasNext()) {
-            iterator.next().normalizeMarginals();
-        }
+        if (floodSweep == null) floodSweep = new FloodingScheduler(this);
+        floodSweep.sweep();
+        minicpbp.util.BPStats.sweeps++;
     }
+
+    private FloodingScheduler floodSweep;
 
     /**
      * Computes a global loss function from the constraints.

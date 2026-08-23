@@ -32,6 +32,11 @@ import minicpbp.util.exception.NotImplementedException;
  */
 public abstract class AbstractConstraint implements Constraint {
 
+    /* the in-place update leaves the marginal unnormalised; these bound the
+     * scale it is allowed to drift to before a normalisation is forced */
+    private static final double SCALE_FLOOR = 1.0E-100;
+    private static final double SCALE_CEIL = 1.0E100;
+
     private String name;
     /**
      * The solver in which the constraint is created
@@ -43,6 +48,11 @@ public abstract class AbstractConstraint implements Constraint {
     private StateDouble[][] localBelief;
     private double[][] outsideBelief;
     private StateDouble[][] prevOutsideBelief; // needed for message damping
+    // scratch state of the in-place (Gauss-Seidel) factor update, allocated on
+    // first use so the flooding schedule pays nothing for it
+    private double[][] cavityBelief;  // variable-to-constraint message before damping
+    private double[][] prevLocalBelief; // local belief as it was before updateBelief()
+    private double[] msgResidual;     // per scope position, how far the last message moved
     private double weight; // an optional nonnegative weight applied to the constraint's local belief
     protected Belief beliefRep;
     private int[] ofs;
@@ -325,6 +335,155 @@ public abstract class AbstractConstraint implements Constraint {
             }
         }
 //        System.out.println();
+    }
+
+    /**
+     * In-place (Gauss-Seidel) counterpart of {@code receiveMessages()} followed
+     * by {@code sendMessages()}: the outgoing messages are published into the
+     * marginals of the scope immediately, so a factor executed later in the
+     * same sweep reads them. The flooding schedule instead resets every
+     * marginal between the two phases and rebuilds it as the product of all
+     * local beliefs, which is why information there needs a whole sweep to
+     * cross one factor.
+     * <p>
+     * Marginal bookkeeping. With the marginal held as
+     * {@code b(v) = prod_c local_c(v)}, replacing this constraint's message
+     * means dividing the old factor out and multiplying the new one in. The
+     * quotient {@code b(v)/local_this(v)} is the cavity distribution, which
+     * {@code receiveMessages()} already computes as the variable-to-constraint
+     * message; it is kept here before damping is applied, since damping must
+     * affect what the factor reads and not what the search reads.
+     * <p>
+     * The quotient is not defined where the old message was exactly zero
+     * ({@code IntVar.sendMessage} answers uniform there, which is right for a
+     * factor input but wrong for reconstructing a marginal), and it is not
+     * defined when the reconstructed marginal carries no mass. Both cases hand
+     * the variable to {@code resync}, which recomputes the exact product over
+     * the variable's factors; both are counted.
+     *
+     * @param resync recomputes a variable's marginal from all its factors, or
+     *               null to accept the uniform-cavity approximation
+     * @return the largest absolute change, in standard representation, of any
+     * message this constraint sent: the factor residual used by residual
+     * scheduling
+     */
+    public double updateMessagesInPlace(MarginalResync resync) {
+        if (cavityBelief == null) {
+            cavityBelief = new double[vars.length][];
+            prevLocalBelief = new double[vars.length][];
+            msgResidual = new double[vars.length];
+            for (int i = 0; i < vars.length; i++) {
+                cavityBelief[i] = new double[outsideBelief[i].length];
+                prevLocalBelief[i] = new double[outsideBelief[i].length];
+            }
+        }
+        // phase 1: read the cavity distributions, remembering the messages that
+        // are about to be overwritten
+        for (int i = 0; i < vars.length; i++) {
+            if (vars[i].isBound()) {
+                setOutsideBelief(i, vars[i].min(), beliefRep.one());
+                continue;
+            }
+            int s = vars[i].fillArray(domainValues);
+            boolean zeroMessage = false;
+            for (int j = 0; j < s; j++) {
+                int val = domainValues[j];
+                double old = beliefRep.pow(localBelief(i, val), this.weight);
+                prevLocalBelief[i][val - ofs[i]] = old;
+                if (beliefRep.isZero(old)) zeroMessage = true;
+            }
+            // Where the old message was zero the quotient is undefined and
+            // IntVar.sendMessage answers a uniform 1/|D| instead. That answer
+            // is only on the right scale if the marginal is normalised, so
+            // normalise it here -- and only here, since the marginal is left
+            // unnormalised the rest of the time (the cavity is normalised at
+            // every step, which keeps the scale bounded, and the schedule
+            // normalises once per sweep for the engine's entropy tests).
+            if (zeroMessage) vars[i].normalizeMarginals();
+            for (int j = 0; j < s; j++) {
+                int val = domainValues[j];
+                setOutsideBelief(i, val, vars[i].sendMessage(val, prevLocalBelief[i][val - ofs[i]]));
+            }
+            normalizeBelief(i, (j, val) -> outsideBelief(j, val),
+                    (j, val, b) -> setOutsideBelief(j, val, b));
+            for (int j = 0; j < s; j++) {
+                int val = domainValues[j];
+                cavityBelief[i][val - ofs[i]] = outsideBelief(i, val);
+            }
+            if (cp.dampingMessages()) {
+                if (cp.prevOutsideBeliefRecorded())
+                    dampenMessages(i);
+                for (int j = 0; j < s; j++) {
+                    int val = domainValues[j];
+                    setPrevOutsideBelief(i, val, outsideBelief(i, val));
+                }
+            }
+        }
+        // phase 2: the weighted counting
+        updateBelief();
+        // phase 3: publish the new messages into the marginals
+        double residual = 0.0;
+        for (int i = 0; i < vars.length; i++) {
+            msgResidual[i] = 0.0;
+            if (vars[i].isBound()) continue; // a "certainly true" message changes nothing
+            normalizeBelief(i, (j, val) -> localBelief(j, val),
+                    (j, val, b) -> setLocalBelief(j, val, b));
+            int s = vars[i].fillArray(domainValues);
+            double mass = 0.0;
+            boolean resurrected = false;
+            for (int j = 0; j < s; j++) {
+                int val = domainValues[j];
+                double b = beliefRep.pow(localBelief(i, val), this.weight);
+                double old = prevLocalBelief[i][val - ofs[i]];
+                double delta = Math.abs(beliefRep.rep2std(b) - beliefRep.rep2std(old));
+                if (delta > msgResidual[i]) msgResidual[i] = delta;
+                // A value whose message was zero has a zero marginal, so the
+                // cavity could not be recovered by division and the uniform
+                // answer of IntVar.sendMessage was used instead. That only
+                // matters where the message stops being zero: while it stays
+                // zero the product is zero either way, which is what the
+                // flooding sweep computes too.
+                if (beliefRep.isZero(old) && !beliefRep.isZero(b)) resurrected = true;
+                double m = beliefRep.multiply(cavityBelief[i][val - ofs[i]], b);
+                mass += beliefRep.rep2std(m);
+                vars[i].setMarginal(val, m);
+            }
+            if (msgResidual[i] > residual) residual = msgResidual[i];
+            if (resync != null && (resurrected || mass <= 0.0)) {
+                minicpbp.util.BPStats.marginalResyncs++;
+                resync.resync(vars[i].getBaseVar());
+            } else if (mass < SCALE_FLOOR || mass > SCALE_CEIL) {
+                vars[i].normalizeMarginals(); // keep the product away from underflow
+            }
+        }
+        return residual;
+    }
+
+    /**
+     * How far the message this constraint last sent to the variable at scope
+     * position {@code i} moved, in standard representation. Zero before the
+     * first in-place update.
+     */
+    public double messageResidual(int i) {
+        return msgResidual == null ? 0.0 : msgResidual[i];
+    }
+
+    /**
+     * Multiplies this constraint's current local belief into the marginals of
+     * the variables of its scope whose base variable is {@code base}, which is
+     * the send half of {@code sendMessages()} without the weighted counting.
+     * Used to rebuild a marginal as the exact product of the messages it
+     * receives.
+     */
+    public void contributeMarginal(IntVar base) {
+        for (int i = 0; i < vars.length; i++) {
+            if (vars[i].isBound() || vars[i].getBaseVar() != base) continue;
+            int s = vars[i].fillArray(domainValues);
+            for (int j = 0; j < s; j++) {
+                int val = domainValues[j];
+                vars[i].receiveMessage(val, beliefRep.pow(localBelief(i, val), this.weight));
+            }
+        }
     }
 
     /**
