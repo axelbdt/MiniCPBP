@@ -467,7 +467,9 @@ public class CardinalityDC extends AbstractConstraint {
         if (!exact) {
             if (bp == null) bp = new GccBP();
             for (int j = 0; j < k; j++) java.util.Arrays.fill(msgOcc[j], 0, up[j] + 1, 0.0);
-            if (!bp.run(n, k, a, b, low, up, wOcc, GccConfig.BP_ITERS, msg, msgOcc)) {
+            if (!bp.run(n, k, a, b, low, up, wOcc, GccConfig.BP_ITERS, msg, msgOcc,
+                    GccConfig.BP_EPS, GccConfig.BP_WARM,
+                    GccConfig.BP_MIN_COLD, GccConfig.BP_MIN_WARM)) {
                 super.updateBelief(); // numerical failure: uniform fallback
                 return;
             }

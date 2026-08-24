@@ -229,7 +229,8 @@ public class BinPackingCounting extends AbstractConstraint {
         if (!exact) {
             if (bp == null) bp = new BinPackingBP();
             for (int j = 0; j < m; j++) java.util.Arrays.fill(msgLoad[j], 0, up[j] + 1, 0.0);
-            if (!bp.run(n, m, size, a, low, up, wLoad, BinPackingConfig.BP_ITERS, msg, msgLoad)) {
+            if (!bp.run(n, m, size, a, low, up, wLoad, BinPackingConfig.BP_ITERS, msg, msgLoad,
+                    BinPackingConfig.BP_EPS, BinPackingConfig.BP_MIN_SWEEPS)) {
                 super.updateBelief(); // numerical failure: uniform fallback
                 return;
             }

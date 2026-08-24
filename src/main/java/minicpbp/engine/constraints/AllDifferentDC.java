@@ -414,13 +414,12 @@ public class AllDifferentDC extends AbstractConstraint {
     private boolean updateBeliefBP(int nbVar, int nbVal) {
         AllDiffStats.bpCalls++;
         long iterBefore = bp.nbIterations();
-        // A non-positive configured cap means "adapt to the matrix": Phase 1
-        // shows the tau-maximising number of iterations grows with nbVal
-        // (5 at nbVal 8-10, 10-20 at 11-14, 20+ beyond).
-        int iters = AllDiffConfig.BP_ITERS > 0
-                ? AllDiffConfig.BP_ITERS
-                : Math.max(2, Math.min(20, nbVal / 2));
-        boolean converged = bp.run(beliefs, nbVar, nbVal, iters, AllDiffConfig.BP_TOL, minors);
+        // Hard cap of 5 sweeps (configurable), with early stopping once the
+        // normalised solver-facing beliefs move by at most BP_EPS in total
+        // variation over a sweep; see AssignmentBP for the criterion.
+        int iters = AllDiffConfig.BP_ITERS > 0 ? AllDiffConfig.BP_ITERS : 5;
+        boolean converged = bp.run(beliefs, nbVar, nbVal, iters, AllDiffConfig.BP_EPS,
+                AllDiffConfig.BP_MIN_COLD, AllDiffConfig.BP_MIN_WARM, minors);
         AllDiffStats.bpIterations += bp.nbIterations() - iterBefore;
         AllDiffStats.bpEdges += bp.nbEdges();
         AllDiffStats.bpClamps += bp.nbClamps() - prevBpClamps;

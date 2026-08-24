@@ -28,9 +28,19 @@
  *                               (default 40000, inherited from the gcc/
  *                               alldifferent 233 us per-call budget — see
  *                               exp.BinPackingPhase0 threshold table)
- *  minicpbp.binpacking.bpIters  nested-BP sweep cap (default 5, the
+ *  minicpbp.binpacking.bpIters  nested-BP hard sweep cap (default 5, the
  *                               alldifferent cap-5 recommendation, replicated
  *                               by the gcc Phase 1 result)
+ *  minicpbp.binpacking.bpEps    stability threshold on R_t, the max over
+ *                               variables of the total-variation distance
+ *                               between the normalised solver-facing beliefs
+ *                               of two consecutive sweeps; sweeps stop early
+ *                               once reached (default 0.01; <= 0 disables
+ *                               early exit, restoring the fixed-sweep
+ *                               behaviour)
+ *  minicpbp.binpacking.bpMinSweeps  minimum sweeps before the stability test
+ *                               may fire (default 2; this BP always
+ *                               cold-starts)
  *  minicpbp.binpacking.harvest  file to dump sampled belief systems to
  *  minicpbp.binpacking.harvestTag  model name recorded with each system
  *  minicpbp.binpacking.harvestPerBucket  reservoir size per bucket (default 2000)
@@ -49,6 +59,8 @@ public final class BinPackingConfig {
     public static final int MAX_STATES;
     public static final long OPS_BUDGET;
     public static final int BP_ITERS;
+    public static final double BP_EPS;
+    public static final int BP_MIN_SWEEPS;
     public static final String HARVEST_FILE;
     public static final String HARVEST_TAG;
     public static final int HARVEST_PER_BUCKET;
@@ -59,6 +71,9 @@ public final class BinPackingConfig {
         MAX_STATES = Integer.parseInt(System.getProperty("minicpbp.binpacking.maxStates", "65536"));
         OPS_BUDGET = Long.parseLong(System.getProperty("minicpbp.binpacking.opsBudget", "40000"));
         BP_ITERS = Integer.parseInt(System.getProperty("minicpbp.binpacking.bpIters", "5"));
+        BP_EPS = Double.parseDouble(System.getProperty("minicpbp.binpacking.bpEps", "0.01"));
+        BP_MIN_SWEEPS = Integer.parseInt(System.getProperty("minicpbp.binpacking.bpMinSweeps",
+                Integer.toString(BinPackingBP.DEFAULT_MIN_SWEEPS)));
         HARVEST_FILE = System.getProperty("minicpbp.binpacking.harvest", "");
         HARVEST_TAG = System.getProperty("minicpbp.binpacking.harvestTag", "unknown");
         HARVEST_PER_BUCKET = Integer.parseInt(System.getProperty("minicpbp.binpacking.harvestPerBucket", "2000"));
@@ -73,6 +88,7 @@ public final class BinPackingConfig {
 
     public static String describe() {
         return "post=" + POST + " belief=" + BELIEF + " maxStates=" + MAX_STATES
-                + " opsBudget=" + OPS_BUDGET + " bpIters=" + BP_ITERS;
+                + " opsBudget=" + OPS_BUDGET + " bpIters=" + BP_ITERS
+                + " bpEps=" + BP_EPS + " bpMinSweeps=" + BP_MIN_SWEEPS;
     }
 }

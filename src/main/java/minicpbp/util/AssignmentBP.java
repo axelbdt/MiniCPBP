@@ -45,6 +45,26 @@
  * perm(A^{ij}) up to a factor that depends on i only, which the row-wise
  * normalisation in sendMessages() removes. Returning beta would multiply the
  * outside belief in a second time.
+ *
+ * Stop criterion (2026-08-24)
+ * ---------------------------
+ * A hard cap of maxIters sweeps, with early stopping on the stability of the
+ * SOLVER-FACING beliefs rather than of the raw messages. After sweep t,
+ *
+ *     p_i^{(t)}(v) = theta_i(v) m_i^{(t)}(v) / sum_u theta_i(u) m_i^{(t)}(u)
+ *
+ * with theta_i(v) = A[i][v] the outside belief and m_i^{(t)}(v) = nu_{v->i}
+ * the cavity message, i.e. exactly the distribution AbstractConstraint's
+ * row normalisation hands to the solver. With
+ *
+ *     TV(p, q) = 1/2 sum_v |p(v) - q(v)|,
+ *     R_t      = max_i TV(p_i^{(t)}, p_i^{(t-1)}),
+ *
+ * the iteration stops once R_t &lt;= eps, subject to a minimum sweep count
+ * (2 from a cold start, 1 from a warm start; p^{(0)} is read off the
+ * starting messages, which are nu = 1 when cold). This asks whether another
+ * sweep would materially move the beliefs the solver uses, not whether the
+ * messages have reached a numerical fixed point.
  */
 
 package minicpbp.util;
@@ -55,6 +75,9 @@ public final class AssignmentBP {
     private static final double MU_MAX = 1e12;
     /** Relative threshold below which a leave-one-out difference is recomputed. */
     private static final double CANCEL_REL = 1e-10;
+    /** Default minimum number of sweeps before the stability test may fire. */
+    public static final int DEFAULT_MIN_SWEEPS_COLD = 2;
+    public static final int DEFAULT_MIN_SWEEPS_WARM = 1;
 
     // CSR edge list, row major
     private int[] rowStart;
@@ -62,6 +85,7 @@ public final class AssignmentBP {
     private double[] a;      // A[i][j] for the edge
     private double[] mu;
     private double[] nu;
+    private double[] p;      // p_i(j) of the previous sweep, edge indexed
     private double[] rowAcc; // R_i  = sum_j A[i][j] nu_{j->i}
     private double[] colAcc; // C_j  = sum_i mu_{i->j}
     private int nbEdges;
@@ -88,6 +112,7 @@ public final class AssignmentBP {
         a = new double[cap];
         mu = new double[cap];
         nu = new double[cap];
+        p = new double[cap];
         rowAcc = new double[maxM];
         colAcc = new double[maxN];
     }
@@ -98,7 +123,32 @@ public final class AssignmentBP {
         a = new double[cap];
         mu = new double[cap];
         nu = new double[cap];
+        p = new double[cap];
         haveWarmStart = false;
+    }
+
+    /**
+     * R_t = max_i TV(p_i^{(t)}, p_i^{(t-1)}) over the solver-facing beliefs
+     * p_i(j) = A_ij nu_ji / sum_j' A_ij' nu_j'i, overwriting prev with
+     * p^{(t)}. Called once before the first sweep to seed prev, its result
+     * then being meaningless and discarded.
+     */
+    private double beliefChange(double[] prev) {
+        double maxTv = 0.0;
+        for (int i = 0; i < m; i++) {
+            int s = rowStart[i], t = rowStart[i + 1];
+            double z = 0.0;
+            for (int k = s; k < t; k++) z += a[k] * nu[k];
+            double tv = 0.0;
+            for (int k = s; k < t; k++) {
+                double pk = (z > 0.0) ? a[k] * nu[k] / z : 0.0;
+                tv += Math.abs(pk - prev[k]);
+                prev[k] = pk;
+            }
+            tv *= 0.5;
+            if (tv > maxTv) maxTv = tv;
+        }
+        return maxTv;
     }
 
     /**
@@ -107,12 +157,24 @@ public final class AssignmentBP {
      * @param A        m x n nonnegative outside-belief matrix (standard representation)
      * @param m        number of free variables (rows)
      * @param n        number of free values (columns)
-     * @param maxIters iteration cap
-     * @param tol      convergence tolerance on max |log(nu_new/nu_old)|
+     * @param maxIters sweep cap
+     * @param eps      stability threshold on R_t (0 or less disables early stopping)
      * @param out      m x n output, entries with A[i][j] == 0 are set to 0
-     * @return true if the iteration converged within the cap
+     * @return true if the iteration stopped early on the stability test
      */
-    public boolean run(double[][] A, int m, int n, int maxIters, double tol, double[][] out) {
+    public boolean run(double[][] A, int m, int n, int maxIters, double eps, double[][] out) {
+        return run(A, m, n, maxIters, eps, DEFAULT_MIN_SWEEPS_COLD, DEFAULT_MIN_SWEEPS_WARM, out);
+    }
+
+    /**
+     * As {@link #run(double[][], int, int, int, double, double[][])}, with the
+     * minimum sweep counts spelled out.
+     *
+     * @param minCold minimum sweeps when the messages start from nu = 1
+     * @param minWarm minimum sweeps when the previous call's messages are reused
+     */
+    public boolean run(double[][] A, int m, int n, int maxIters, double eps,
+                       int minCold, int minWarm, double[][] out) {
         this.m = m;
         this.n = n;
         nbCalls++;
@@ -149,8 +211,10 @@ public final class AssignmentBP {
         if (!warm) {
             for (int k = 0; k < nbEdges; k++) nu[k] = 1.0;
         }
+        int minSweeps = Math.max(1, warm ? minWarm : minCold);
 
         // ---- iterate ---------------------------------------------------
+        beliefChange(p); // p^{(0)}, read off the starting messages
         boolean converged = false;
         int iter = 0;
         for (; iter < maxIters; iter++) {
@@ -189,7 +253,6 @@ public final class AssignmentBP {
             // column pass: nu_{j->i} = 1 / (1 + C_j - mu_ij)
             java.util.Arrays.fill(colAcc, 0, n, 0.0);
             for (int k = 0; k < nbEdges; k++) colAcc[colIdx[k]] += mu[k];
-            double maxDelta = 0.0;
             for (int i = 0; i < m; i++) {
                 for (int k = rowStart[i]; k < rowStart[i + 1]; k++) {
                     int j = colIdx[k];
@@ -213,14 +276,13 @@ public final class AssignmentBP {
                         nbNonFinite++;
                         newNu = Double.MIN_NORMAL;
                     }
-                    double old = nu[k];
-                    double delta = Math.abs(Math.log(newNu) - Math.log(old));
-                    if (delta > maxDelta) maxDelta = delta;
                     nu[k] = newNu;
                 }
             }
             nbIterations++;
-            if (maxDelta <= tol) {
+            // stability of the solver-facing beliefs, not of the messages
+            double R = beliefChange(p);
+            if (eps > 0.0 && iter + 1 >= minSweeps && R <= eps) {
                 converged = true;
                 iter++;
                 break;

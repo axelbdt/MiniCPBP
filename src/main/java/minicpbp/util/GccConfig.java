@@ -28,8 +28,19 @@
  *  minicpbp.gcc.opsBudget   exact-DP operation budget n*(k+1)*states (default 40000,
  *                           calibrated 2026-08-18 to the 233 us alldifferent
  *                           per-call budget; see GccPhase0 threshold table)
- *  minicpbp.gcc.bpIters     nested-BP sweep cap (default 5, the alldifferent
- *                           cap-5 recommendation)
+ *  minicpbp.gcc.bpIters     nested-BP hard sweep cap (default 5)
+ *  minicpbp.gcc.bpEps       stability threshold on R_t, the max over
+ *                           variables of the total-variation distance
+ *                           between the normalised solver-facing beliefs of
+ *                           two consecutive sweeps; sweeps stop early once
+ *                           reached (default 0.01; <= 0 disables early exit,
+ *                           restoring the fixed-sweep behaviour)
+ *  minicpbp.gcc.bpMinCold   minimum sweeps, cold start (default 2)
+ *  minicpbp.gcc.bpMinWarm   minimum sweeps, warm start (default 1)
+ *  minicpbp.gcc.bpWarm      true | false (default true): reuse the previous
+ *                           call's messages as the starting point when the
+ *                           edge structure (n, k, low, up, domain edges) is
+ *                           unchanged, as AssignmentBP does for alldifferent
  *  minicpbp.gcc.harvest     file to dump sampled belief systems to
  *  minicpbp.gcc.harvestTag  model name recorded with each system
  *  minicpbp.gcc.harvestPerBucket  reservoir size per bucket (default 2000)
@@ -48,6 +59,10 @@ public final class GccConfig {
     public static final int MAX_STATES;
     public static final long OPS_BUDGET;
     public static final int BP_ITERS;
+    public static final double BP_EPS;
+    public static final int BP_MIN_COLD;
+    public static final int BP_MIN_WARM;
+    public static final boolean BP_WARM;
     public static final String HARVEST_FILE;
     public static final String HARVEST_TAG;
     public static final int HARVEST_PER_BUCKET;
@@ -58,6 +73,12 @@ public final class GccConfig {
         MAX_STATES = Integer.parseInt(System.getProperty("minicpbp.gcc.maxStates", "65536"));
         OPS_BUDGET = Long.parseLong(System.getProperty("minicpbp.gcc.opsBudget", "40000"));
         BP_ITERS = Integer.parseInt(System.getProperty("minicpbp.gcc.bpIters", "5"));
+        BP_EPS = Double.parseDouble(System.getProperty("minicpbp.gcc.bpEps", "0.01"));
+        BP_MIN_COLD = Integer.parseInt(System.getProperty("minicpbp.gcc.bpMinCold",
+                Integer.toString(GccBP.DEFAULT_MIN_SWEEPS_COLD)));
+        BP_MIN_WARM = Integer.parseInt(System.getProperty("minicpbp.gcc.bpMinWarm",
+                Integer.toString(GccBP.DEFAULT_MIN_SWEEPS_WARM)));
+        BP_WARM = Boolean.parseBoolean(System.getProperty("minicpbp.gcc.bpWarm", "true"));
         HARVEST_FILE = System.getProperty("minicpbp.gcc.harvest", "");
         HARVEST_TAG = System.getProperty("minicpbp.gcc.harvestTag", "unknown");
         HARVEST_PER_BUCKET = Integer.parseInt(System.getProperty("minicpbp.gcc.harvestPerBucket", "2000"));
@@ -72,6 +93,8 @@ public final class GccConfig {
 
     public static String describe() {
         return "post=" + POST + " belief=" + BELIEF + " maxStates=" + MAX_STATES
-                + " opsBudget=" + OPS_BUDGET + " bpIters=" + BP_ITERS;
+                + " opsBudget=" + OPS_BUDGET + " bpIters=" + BP_ITERS
+                + " bpEps=" + BP_EPS + " bpMinCold=" + BP_MIN_COLD
+                + " bpMinWarm=" + BP_MIN_WARM + " bpWarm=" + BP_WARM;
     }
 }
