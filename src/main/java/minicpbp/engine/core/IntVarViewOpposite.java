@@ -246,10 +246,25 @@ public class IntVarViewOpposite implements IntVar {
     }
 
     @Override
+    public double cavity(int v, double ownMsg) {
+        return x.cavity(-v, ownMsg);
+    }
+
+    @Override
+    public void messageReplaced(int v, double oldMsg, double newMsg) {
+        x.messageReplaced(-v, oldMsg, newMsg);
+    }
+
+    @Override
+    public int zeroMsgCount(int v) {
+        return x.zeroMsgCount(-v);
+    }
+
+    @Override
     public void receiveMessage(int v, double b) {
         assert b <= beliefRep.one() && b >= beliefRep.zero() : "b = " + b;
         assert x.marginal(-v) <= beliefRep.one() && x.marginal(-v) >= beliefRep.zero() : "x.marginal(-v) = " + x.marginal(-v);
-        x.setMarginal(-v, beliefRep.multiply(x.marginal(-v), b));
+        x.receiveMessage(-v, b); // keeps the zero-aware product in step
     }
 
     @Override

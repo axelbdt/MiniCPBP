@@ -179,6 +179,52 @@ public interface IntDomain {
      */
     void resetMarginals();
 
+    /* --- the zero-aware product, 2026-08-25 (BP_COST_PROFILE.md Lever B) ---
+     *
+     * The marginal is a product of incident messages, and BP messages in a
+     * constraint graph carry hard zeros: a value excluded by one factor gets an
+     * exactly-zero message. Once that happens the marginal is zero and the
+     * cavity distribution -- the product of the OTHER factors' messages -- can
+     * no longer be recovered by dividing the marginal by the factor's own
+     * message. Alongside the marginal the domain therefore keeps, per value,
+     * the product of the NON-ZERO messages and a count of how many messages are
+     * zero. Both are then exactly recoverable, with no division by zero.
+     *
+     * Neither is reversible: they are rebuilt from the incident factors at the
+     * entry of every BP invocation (MiniCP.warmEntry and MiniCP.coldReset both
+     * call resetMarginals on every variable), and nothing outside belief
+     * propagation reads them. The marginal itself keeps its own trailed
+     * storage and its own scale, which normalizeMarginals is free to change. */
+
+    /**
+     * The product of the messages received on {@code v} from every factor
+     * except the one whose own message is {@code ownMsg}. Exact, including when
+     * {@code ownMsg} is zero, which is where a quotient of marginals fails.
+     *
+     * @param v      is an element in the domain
+     * @param ownMsg the message the asking factor last sent on {@code v}
+     */
+    double cavity(int v, double ownMsg);
+
+    /**
+     * Multiplies one factor's message into the marginal of {@code v} and into
+     * the zero-aware product.
+     */
+    void multiplyInMessage(int v, double b);
+
+    /**
+     * Records in the zero-aware product that one factor's message on {@code v}
+     * changed from {@code oldMsg} to {@code newMsg}. The marginal is written
+     * separately by the caller, which has the cavity to multiply.
+     */
+    void messageReplaced(int v, double oldMsg, double newMsg);
+
+    /**
+     * How many incident factors currently send an exactly-zero message on
+     * {@code v}. Diagnostics and assertions.
+     */
+    int zeroMsgCount(int v);
+
 
     /**
      * Normalizes the marginals.

@@ -69,6 +69,12 @@ public final class BPStats {
      *  zero being the exact marginal. These were resyncZeroMass before
      *  2026-08-25. */
     public static long zeroMassLeftAlone;
+    /** rescalings of a variable's zero-aware product, to keep it off the
+     *  underflow floor (SparseSetDomain.NZ_FLOOR) */
+    public static long nzRescales;
+    /** zero-aware products that underflowed to zero anyway, so the cavity had to
+     *  be reported unusable and the marginal rebuilt */
+    public static long nzUnusable;
     /** schedules built (a rebuild is one dependency-graph construction) */
     public static long schedulesBuilt;
     /** schedules reused without rebuilding */
@@ -151,6 +157,8 @@ public final class BPStats {
                 + " bpCavityFallbacks=" + cavityFallbacks
                 + " bpCavityExactZero=" + cavityExactZero
                 + " bpZeroMassLeftAlone=" + zeroMassLeftAlone
+                + " bpNzRescales=" + nzRescales
+                + " bpNzUnusable=" + nzUnusable
                 + " bpWarmEntryRebuilds=" + warmEntryRebuilds
                 + " bpWarmEntryMs=" + (warmEntryNanos / 1000000)
                 + " bpWarmEntryColdFallbacks=" + warmEntryColdFallbacks

@@ -317,11 +317,38 @@ public class  IntVarViewMul implements IntVar {
     }
 
     @Override
+    public double cavity(int v, double ownMsg) {
+	if (v % a == 0) {
+	    return x.cavity(v/a, ownMsg);
+        } else {
+            throw new InconsistencyException();
+	}
+    }
+
+    @Override
+    public void messageReplaced(int v, double oldMsg, double newMsg) {
+	if (v % a == 0) {
+	    x.messageReplaced(v/a, oldMsg, newMsg);
+        } else {
+            throw new InconsistencyException();
+	}
+    }
+
+    @Override
+    public int zeroMsgCount(int v) {
+	if (v % a == 0) {
+	    return x.zeroMsgCount(v/a);
+        } else {
+            throw new InconsistencyException();
+	}
+    }
+
+    @Override
     public void receiveMessage(int v, double b) {
 	assert b<=beliefRep.one() && b>=beliefRep.zero() : "b = "+b ;
 	if (v % a == 0) {
 	    assert x.marginal(v/a)<=beliefRep.one() && x.marginal(v/a)>=beliefRep.zero() : "x.marginal(v/a) = "+x.marginal(v/a) ;
-	    x.setMarginal(v/a,beliefRep.multiply(x.marginal(v/a),b));
+	    x.receiveMessage(v/a, b); // keeps the zero-aware product in step
         } else {
             throw new InconsistencyException();
 	}

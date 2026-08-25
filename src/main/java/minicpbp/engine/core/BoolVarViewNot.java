@@ -271,10 +271,25 @@ public class BoolVarViewNot implements BoolVar {
     }
 
     @Override
+    public double cavity(int v, double ownMsg) {
+        return x.cavity(1-v, ownMsg);
+    }
+
+    @Override
+    public void messageReplaced(int v, double oldMsg, double newMsg) {
+        x.messageReplaced(1-v, oldMsg, newMsg);
+    }
+
+    @Override
+    public int zeroMsgCount(int v) {
+        return x.zeroMsgCount(1-v);
+    }
+
+    @Override
     public void receiveMessage(int v, double b) {
         assert b <= beliefRep.one() && b >= beliefRep.zero() : "b = " + b;
         assert x.marginal(1-v) <= beliefRep.one() && x.marginal(1-v) >= beliefRep.zero() : "x.marginal(not v) = " + x.marginal(1-v);
-        x.setMarginal(1-v, beliefRep.multiply(x.marginal(1-v), b));
+        x.receiveMessage(1-v, b); // keeps the zero-aware product in step
     }
 
     @Override

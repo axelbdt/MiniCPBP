@@ -401,7 +401,22 @@ public class IntVarImpl implements IntVar {
     public void receiveMessage(int v, double b) {
         assert b <= beliefRep.one() && b >= beliefRep.zero() : "b = " + b;
         assert domain.marginal(v) <= beliefRep.one() && domain.marginal(v) >= beliefRep.zero() : "domain.marginal(v) = " + domain.marginal(v);
-        domain.setMarginal(v, beliefRep.multiply(domain.marginal(v), b));
+        domain.multiplyInMessage(v, b);
+    }
+
+    @Override
+    public double cavity(int v, double ownMsg) {
+        return domain.cavity(v, ownMsg);
+    }
+
+    @Override
+    public void messageReplaced(int v, double oldMsg, double newMsg) {
+        domain.messageReplaced(v, oldMsg, newMsg);
+    }
+
+    @Override
+    public int zeroMsgCount(int v) {
+        return domain.zeroMsgCount(v);
     }
 
     @Override

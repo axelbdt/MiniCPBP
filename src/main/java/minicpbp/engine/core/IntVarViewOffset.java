@@ -253,10 +253,25 @@ public class IntVarViewOffset implements IntVar {
     }
 
     @Override
+    public double cavity(int v, double ownMsg) {
+        return x.cavity(v - o, ownMsg);
+    }
+
+    @Override
+    public void messageReplaced(int v, double oldMsg, double newMsg) {
+        x.messageReplaced(v - o, oldMsg, newMsg);
+    }
+
+    @Override
+    public int zeroMsgCount(int v) {
+        return x.zeroMsgCount(v - o);
+    }
+
+    @Override
     public void receiveMessage(int v, double b) {
         assert b <= beliefRep.one() && b >= beliefRep.zero() : "b = " + b;
         assert x.marginal(v - o) <= beliefRep.one() && x.marginal(v - o) >= beliefRep.zero() : "x.marginal(v - o) = " + x.marginal(v - o);
-        x.setMarginal(v - o, beliefRep.multiply(x.marginal(v - o), b));
+        x.receiveMessage(v - o, b); // keeps the zero-aware product in step
     }
 
     @Override

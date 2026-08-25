@@ -301,6 +301,37 @@ public interface IntVar {
     double sendMessage(int v, double b);
 
     /**
+     * The exact cavity distribution at {@code v}: the product of the messages
+     * received from every factor except the one whose own last message on
+     * {@code v} was {@code ownMsg}.
+     * <p>
+     * This is what {@code sendMessage} approximates by dividing the marginal by
+     * {@code ownMsg}, which fails when {@code ownMsg} is zero -- a routine
+     * event, since a value excluded by any factor gets an exactly-zero message.
+     * Computed from the zero-aware product instead, so it is exact in that case
+     * too (BP_COST_PROFILE.md Lever B).
+     *
+     * @param v      the value
+     * @param ownMsg the message the asking factor last sent on {@code v}
+     * @return the product of the other factors' messages on {@code v}
+     */
+    double cavity(int v, double ownMsg);
+
+    /**
+     * Records that one factor's message on {@code v} changed from
+     * {@code oldMsg} to {@code newMsg}, keeping the zero-aware product in step.
+     * The marginal is written separately with {@code setMarginal}, by the caller
+     * that holds the cavity.
+     */
+    void messageReplaced(int v, double oldMsg, double newMsg);
+
+    /**
+     * How many incident factors currently send an exactly-zero message on
+     * {@code v}. Diagnostics and assertions.
+     */
+    int zeroMsgCount(int v);
+
+    /**
      * Accumulates in the marginal of the specified value 
      * the local belief of a constraint.
      *
