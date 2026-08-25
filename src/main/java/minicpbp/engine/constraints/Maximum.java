@@ -31,22 +31,26 @@ public class Maximum extends AbstractConstraint {
     private final IntVar y;
     private int n;
     private double[][] beliefLessOrEqual;
-    private double[] bProductLessOrEqual;
-    /**
-     * beliefProductExcluding[i][j] = prod over i' != i of beliefLessOrEqual[i'][j],
-     * computed by prefix/suffix products, NEVER by dividing bProductLessOrEqual
-     * by beliefLessOrEqual[i][j]: that division is 0/0 = NaN whenever variable
-     * i has zero outside-belief mass on values <= j+offset (observed on
-     * DeBruijn through opposite views, 2026-08-18; crashed the frontend with
-     * "NaN marginal"). Same lesson as the Ryser/deflation ban of the
-     * experiment line: leave-one-out by division is not sum-product.
-     */
-    private double[][] beliefProductExcluding;
-    private double[] prefixScratch;
-    private double[] suffixScratch;
     private int offset;
-    private double yBeliefDifference[];
-    private int yOffset;
+    /*
+     * 2026-08-25 (FIXING_ZEROS.md 3.4): the old circuit telescoped with SIGNED
+     * differences -- yBeliefDifference[v] = ob_y(v) - ob_y(v+1) can be
+     * negative, the running sum accumulated signed terms, and y's message was
+     * a literal difference of adjacent CDF products. Catastrophic cancellation
+     * turned tiny true masses into exact zeros (and small negatives that
+     * setLocalBelief clamps). Everything below is sums and products only,
+     * built from the "first variable attaining the maximum" decomposition:
+     *   B(w)   = mass(all x <= w and some x = w)
+     *          = sum_j P(x_j = w) * prod_{k<j} P(x_k < w) * prod_{k>j} P(x_k <= w)
+     * with prefix/suffix registers giving the same leave-one-out masses
+     * D_i(w) (over j != i) in O(n) per value -- same total O(n * range) as the
+     * old code. Leave-one-out by division stays banned (0/0 = NaN whenever a
+     * variable has zero mass below a value; observed on DeBruijn 2026-08-18).
+     */
+    private double[] pF, pG, pOr;   // prefix: all-below, all-at-most, first-max-in-prefix
+    private double[] sG, sOr;       // suffix: all-at-most, first-max-in-suffix
+    private double[] tw, fw, gw;    // per-variable masses at the current value
+    private double[] runningTail;   // sum over w > v of ob_y(w) * D_i(w)
 
     /**
      * Creates the maximum constraint y = maximum(x[0],x[1],...,x[n])
@@ -84,13 +88,16 @@ public class Maximum extends AbstractConstraint {
             }
         }
         beliefLessOrEqual = new double[n][max-min+1];
-        bProductLessOrEqual = new double[max-min+1];
-        beliefProductExcluding = new double[n][max-min+1];
-        prefixScratch = new double[n + 1];
-        suffixScratch = new double[n + 1];
         offset = min;
-        yBeliefDifference = new double[y.max()-y.min()+1];
-        yOffset = y.min();
+        pF = new double[n + 1];
+        pG = new double[n + 1];
+        pOr = new double[n + 1];
+        sG = new double[n + 1];
+        sOr = new double[n + 1];
+        tw = new double[n];
+        fw = new double[n];
+        gw = new double[n];
+        runningTail = new double[n];
     }
 
 
@@ -123,66 +130,80 @@ public class Maximum extends AbstractConstraint {
     }
 
     public void updateBelief() {
-        // accumulate belief for each x[i] wrt values and compute their product for each value
-        for (int j = 0; j < bProductLessOrEqual.length; j++) {
-            bProductLessOrEqual[j] = beliefRep.one();
+        // CDFs: beliefLessOrEqual[i][j] = P(x_i <= j+offset)
+        int rangeLen = beliefLessOrEqual[0].length;
+        for (int j = 0; j < rangeLen; j++) {
             int v = j+offset;
             for (int i = 0; i < n; i++) {
                 beliefLessOrEqual[i][j] = (j==0? beliefRep.zero() : beliefLessOrEqual[i][j-1]);
                 if (x[i].contains(v)) {
                     beliefLessOrEqual[i][j] = beliefRep.add( beliefLessOrEqual[i][j], outsideBelief(i, v));
                 }
- //               System.out.println("beliefLE "+ i + " " + v + ": "+beliefLessOrEqual[i][j]);
-                bProductLessOrEqual[j] = beliefRep.multiply( bProductLessOrEqual[j], beliefLessOrEqual[i][j]);
             }
-//            System.out.println("bProductLE "+ v + ": "+bProductLessOrEqual[j]);
-            // leave-one-out products by prefix/suffix (see field comment: no division)
-            prefixScratch[0] = beliefRep.one();
-            for (int i = 0; i < n; i++)
-                prefixScratch[i+1] = beliefRep.multiply(prefixScratch[i], beliefLessOrEqual[i][j]);
-            suffixScratch[n] = beliefRep.one();
-            for (int i = n - 1; i >= 0; i--)
-                suffixScratch[i] = beliefRep.multiply(suffixScratch[i+1], beliefLessOrEqual[i][j]);
-            for (int i = 0; i < n; i++)
-                beliefProductExcluding[i][j] = beliefRep.multiply(prefixScratch[i], suffixScratch[i+1]);
         }
-        // precompute belief difference between consecutive values in the range of the domain of y
-        for (int v = y.min(); v <= y.max(); v++) {
-            yBeliefDifference[v-yOffset] = beliefRep.subtract(
-                    (y.contains(v)? outsideBelief( n, v) : beliefRep.zero()),
-                    (y.contains(v+1)? outsideBelief( n, v+1) : beliefRep.zero()));
-        }
-        // Compute beliefs for y
-        int s = y.fillArray(domainValues);
-        for (int j = 0; j < s; j++) {
-            int v = domainValues[j];
-            // belief for y=v is that of all x[i]'s being at most v minus that of all x[i]"s being less than v
-            setLocalBelief(n, v, (v>offset? beliefRep.subtract(bProductLessOrEqual[v-offset], bProductLessOrEqual[v-1-offset]) : bProductLessOrEqual[v-offset]));
-        }
-        // Compute beliefs for x[i]s
+        int yMin = y.min(), yMax = y.max();
+        // x values above y.max() cannot be the maximum: true zeros (the old
+        // code left those local beliefs stale)
         for (int i = 0; i < n; i++) {
-//            System.out.println("i="+i);
-            double runningSum = beliefRep.zero();
-            // process values in the range of the domain of y in decreasing order...
-            for (int v = y.max(); v >= y.min(); v--) {
-//                System.out.println("at y value " + v);
-                runningSum = beliefRep.add( runningSum, beliefRep.multiply( yBeliefDifference[v-yOffset], beliefProductExcluding[i][v-offset]));
+            for (int v = x[i].max(); v > yMax; v--) {
                 if (x[i].contains(v)) {
-                    // belief for x[i]=v is (y=v and all other x[j]<=v) + (y=v'>v and all other x[j]<=v' and some x[k]=v')
-                    setLocalBelief(i, v, runningSum);
-//                    System.out.println(runningSum);
+                    setLocalBelief(i, v, beliefRep.zero());
                 }
             }
-            //...and continue until x[i].min()
-            if (x[i].min()<y.min()) { // a last adjustment
-                runningSum = beliefRep.subtract( runningSum, beliefRep.multiply( outsideBelief( n, y.min()), beliefProductExcluding[i][y.min()-1-offset]));
+        }
+        for (int i = 0; i < n; i++) {
+            runningTail[i] = beliefRep.zero();
+        }
+        // one descending sweep over the range of y
+        for (int w = yMax; w >= yMin; w--) {
+            int j = w - offset;
+            double obY = (y.contains(w) ? outsideBelief(n, w) : beliefRep.zero());
+            // per-variable masses at w
+            for (int i = 0; i < n; i++) {
+                tw[i] = (x[i].contains(w) ? outsideBelief(i, w) : beliefRep.zero()); // P(x_i = w)
+                fw[i] = (j == 0 ? beliefRep.zero() : beliefLessOrEqual[i][j-1]);     // P(x_i < w)
+                gw[i] = beliefLessOrEqual[i][j];                                     // P(x_i <= w)
             }
-            for (int v = y.min()-1; v >= x[i].min(); v--) {
-//                System.out.println("at value " + v);
+            // prefix/suffix registers of the first-max decomposition
+            pF[0] = beliefRep.one();
+            pG[0] = beliefRep.one();
+            pOr[0] = beliefRep.zero();
+            for (int i = 0; i < n; i++) {
+                pOr[i+1] = beliefRep.add(beliefRep.multiply(pOr[i], gw[i]), beliefRep.multiply(tw[i], pF[i]));
+                pF[i+1] = beliefRep.multiply(pF[i], fw[i]);
+                pG[i+1] = beliefRep.multiply(pG[i], gw[i]);
+            }
+            sG[n] = beliefRep.one();
+            sOr[n] = beliefRep.zero();
+            for (int i = n - 1; i >= 0; i--) {
+                sOr[i] = beliefRep.add(beliefRep.multiply(tw[i], sG[i+1]), beliefRep.multiply(fw[i], sOr[i+1]));
+                sG[i] = beliefRep.multiply(gw[i], sG[i+1]);
+            }
+            // belief for y=w: mass(all x <= w and some x = w), summed directly
+            if (y.contains(w)) {
+                setLocalBelief(n, w, pOr[n]);
+            }
+            // beliefs for the x[i] at w, and the tails for the values below
+            for (int i = 0; i < n; i++) {
+                // all others <= w
+                double othersAtMost = beliefRep.multiply(pG[i], sG[i+1]);
+                // others <= w and some other = w
+                double othersMaxIs = beliefRep.add(beliefRep.multiply(pOr[i], sG[i+1]),
+                                                   beliefRep.multiply(pF[i], sOr[i+1]));
+                if (x[i].contains(w)) {
+                    // belief for x[i]=w is (y=w and all other x[j]<=w)
+                    // + (y=w'>w, all other x[j]<=w', some other x[k]=w'): the tail
+                    setLocalBelief(i, w, beliefRep.add(beliefRep.multiply(obY, othersAtMost), runningTail[i]));
+                }
+                runningTail[i] = beliefRep.add(runningTail[i], beliefRep.multiply(obY, othersMaxIs));
+            }
+        }
+        // belief for x[i]=v<y.min() is (y=w, all other x[j]<=w, some other x[k]=w)
+        // summed over y's whole range: the full tail
+        for (int i = 0; i < n; i++) {
+            for (int v = yMin - 1; v >= x[i].min(); v--) {
                 if (x[i].contains(v)) {
-                    // belief for x[i]=v<y.min() is (y=v'>v and all other x[j]<=v' and some x[k]=v')
-                    setLocalBelief(i, v, runningSum);
-//                    System.out.println(runningSum);
+                    setLocalBelief(i, v, runningTail[i]);
                 }
             }
         }

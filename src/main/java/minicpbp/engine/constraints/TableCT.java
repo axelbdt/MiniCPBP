@@ -43,6 +43,13 @@ public class TableCT extends AbstractConstraint {
     private BitSet supportedTuples;
     private BitSet supporti;
     private double[] tupleWeight;
+    // scratch for updateBelief (lazily allocated): per-position scaled outside
+    // beliefs, per-(position,value) message accumulators, and per-tuple
+    // prefix/suffix products for leave-one-out weights
+    private double[][] scaledBelief;
+    private double[][] acc;
+    private double[] tuplePrefix;
+    private double[] tupleSuffix;
 
     /**
      * Table constraint.
@@ -193,12 +200,55 @@ public class TableCT extends AbstractConstraint {
             supportedTuples.and(supporti);
         }
 
-        // Each tuple has its own weight given by the product of the outside_belief of its elements.
-        // Compute these products, but only for supported tuples.
-        for (int k = supportedTuples.nextSetBit(0); k >= 0; k = supportedTuples.nextSetBit(k + 1)) {
-            tupleWeight[k] = beliefRep.one();
+        if (scaledBelief == null) {
+            scaledBelief = new double[xLength][];
+            acc = new double[xLength][];
             for (int i = 0; i < xLength; i++) {
-                tupleWeight[k] = beliefRep.multiply(tupleWeight[k], outsideBelief(i, table[k][i]));
+                scaledBelief[i] = new double[supports[i].length];
+                acc[i] = new double[supports[i].length];
+            }
+            tuplePrefix = new double[xLength + 1];
+            tupleSuffix = new double[xLength + 1];
+        }
+
+        // The old circuit computed each tuple's FULL weight (product over every
+        // position) and divided the position out again per message. Two ways to
+        // manufacture zeros there: the full product of many tiny beliefs
+        // underflows to exact 0, which no division recovers; and the
+        // divide-by-zero special case re-walked the tuple per position.
+        // Instead: scale each position's outside beliefs so their max is ONE
+        // (the scale is constant per position, so the per-variable message
+        // normalization cancels it -- FIXING_ZEROS.md 3.4), and accumulate
+        // leave-one-out weights from per-tuple prefix/suffix products, with no
+        // division at all.
+        for (int i = 0; i < xLength; i++) {
+            int s = x[i].fillArray(domainValues);
+            double mx = beliefRep.zero();
+            for (int j = 0; j < s; j++) {
+                double ob = outsideBelief(i, domainValues[j]);
+                if (ob > mx) mx = ob;
+            }
+            for (int j = 0; j < s; j++) {
+                int v = domainValues[j];
+                scaledBelief[i][v - ofs[i]] = beliefRep.isZero(mx)
+                        ? beliefRep.zero() : beliefRep.divide(outsideBelief(i, v), mx);
+            }
+            java.util.Arrays.fill(acc[i], beliefRep.zero());
+        }
+
+        // one pass over the supported tuples (every position of a supported
+        // tuple is in the current domain by construction of supportedTuples)
+        for (int k = supportedTuples.nextSetBit(0); k >= 0; k = supportedTuples.nextSetBit(k + 1)) {
+            tuplePrefix[0] = beliefRep.one();
+            for (int i = 0; i < xLength; i++)
+                tuplePrefix[i + 1] = beliefRep.multiply(tuplePrefix[i], scaledBelief[i][table[k][i] - ofs[i]]);
+            tupleSuffix[xLength] = beliefRep.one();
+            for (int i = xLength - 1; i >= 0; i--)
+                tupleSuffix[i] = beliefRep.multiply(scaledBelief[i][table[k][i] - ofs[i]], tupleSuffix[i + 1]);
+            for (int i = 0; i < xLength; i++) {
+                int idx = table[k][i] - ofs[i];
+                acc[i][idx] = beliefRep.add(acc[i][idx],
+                        beliefRep.multiply(tuplePrefix[i], tupleSuffix[i + 1]));
             }
         }
 
@@ -206,31 +256,7 @@ public class TableCT extends AbstractConstraint {
             int s = x[i].fillArray(domainValues);
             for (int j = 0; j < s; j++) {
                 int v = domainValues[j];
-                double belief = beliefRep.zero();
-                double outsideBelief_i_v = outsideBelief(i, v);
-                BitSet support_i_v = supports[i][v - ofs[i]];
-                // Iterate over supports[i][v] /\ supportedTuples, accumulating the weight of tuples.
-                if (!beliefRep.isZero(outsideBelief_i_v)) {
-                    for (int k = support_i_v.nextSetBit(0); k >= 0; k = support_i_v.nextSetBit(k + 1)) {
-                        if (supportedTuples.get(k)) {
-                            belief = beliefRep.add(belief, beliefRep.divide(tupleWeight[k], outsideBelief_i_v));
-                        }
-                    }
-                } else { // special case of null outside belief (avoid division by zero)
-                    for (int k = support_i_v.nextSetBit(0); k >= 0; k = support_i_v.nextSetBit(k + 1)) {
-                        if (supportedTuples.get(k)) {
-                            double weight = beliefRep.one();
-                            for (int i2 = 0; i2 < i; i2++) {
-                                weight = beliefRep.multiply(weight, outsideBelief(i2, table[k][i2]));
-                            }
-                            for (int i2 = i + 1; i2 < xLength; i2++) {
-                                weight = beliefRep.multiply(weight, outsideBelief(i2, table[k][i2]));
-                            }
-                            belief = beliefRep.add(belief, weight);
-                        }
-                    }
-                }
-                setLocalBelief(i, v, belief);
+                setLocalBelief(i, v, acc[i][v - ofs[i]]);
             }
         }
     }

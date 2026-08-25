@@ -158,6 +158,25 @@ public class Regular extends AbstractConstraint {
         }
     }
 
+    /**
+     * Rescales a DP layer so its maximum becomes ONE once it has drifted below
+     * 1e-100: on long chains the layer values (sums of products of outside
+     * beliefs) decay together and underflow to exact zeros (FIXING_ZEROS.md
+     * 3.4: scale the DP per stage). The factor is constant across a variable's
+     * values, so per-variable message normalization cancels it -- no
+     * bookkeeping. Not applied in weightedCounting(), which returns an
+     * absolute count. Same helper as SumDC.
+     */
+    private void rescaleLayer(double[] layer) {
+        double mx = beliefRep.zero();
+        for (int k = 0; k < layer.length; k++)
+            if (layer[k] > mx) mx = layer[k];
+        if (!beliefRep.isZero(mx) && beliefRep.rep2std(mx) < 1e-100) {
+            for (int k = 0; k < layer.length; k++)
+                layer[k] = beliefRep.divide(layer[k], mx);
+        }
+    }
+
     @Override
     public void updateBelief() {
         for (int i = 0; i < n; i++) {
@@ -177,6 +196,7 @@ public class Regular extends AbstractConstraint {
                     }
                 }
             }
+            rescaleLayer(ip[i + 1]);
         }
 
         for (int i = 0; i < n; i++) {
@@ -203,6 +223,7 @@ public class Regular extends AbstractConstraint {
                 }
                 setLocalBelief(i, v, belief);
             }
+            rescaleLayer(op[i - 1]);
         }
         int s = x[0].fillArray(domainValues);
         for (int j = 0; j < s; j++) {

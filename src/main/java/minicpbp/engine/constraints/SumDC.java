@@ -311,6 +311,30 @@ public class SumDC extends AbstractConstraint {
         }
     }
 
+    /**
+     * Rescales a DP layer so its maximum becomes ONE once it has drifted below
+     * 1e-100. Layer values are sums of products of outside beliefs along the
+     * chain, so on long chains they decay together and eventually underflow to
+     * exact zeros -- values declared impossible by magnitude alone
+     * (FIXING_ZEROS.md 3.4: scale the DP per stage). The scale factor is
+     * constant across a variable's values (a message is sum_k ip[k]*op[k'],
+     * both layers scaled uniformly), so the per-variable message normalization
+     * cancels it exactly: no bookkeeping. Not applied in weightedCounting(),
+     * which returns an absolute count.
+     * Limitation: this fixes the systematic whole-layer decay, not a single
+     * path that is tiny RELATIVE to the layer maximum; that one still
+     * underflows and needs log-space arithmetic to survive.
+     */
+    private void rescaleLayer(double[] layer, int lo, int hi) {
+        double mx = beliefRep.zero();
+        for (int k = lo; k <= hi; k++)
+            if (layer[k] > mx) mx = layer[k];
+        if (!beliefRep.isZero(mx) && beliefRep.rep2std(mx) < 1e-100) {
+            for (int k = lo; k <= hi; k++)
+                layer[k] = beliefRep.divide(layer[k], mx);
+        }
+    }
+
     @Override
     public void updateBelief() {
         int idx, s, v;
@@ -354,6 +378,7 @@ public class SumDC extends AbstractConstraint {
                         }
                     }
                 }
+                rescaleLayer(ip[i + 1], minState[i + 1], maxState[i + 1]);
             }
             // Reach backward and set local beliefs
             op[nUnBounds.value() - 1][minState[nUnBounds.value()]] = beliefRep.one();
@@ -374,6 +399,7 @@ public class SumDC extends AbstractConstraint {
                     }
                     setLocalBelief(idx, v, belief);
                 }
+                rescaleLayer(op[i - 1], minState[i], maxState[i]);
             }
             idx = unBounds[0];
             s = x[idx].fillArray(domainValues);
@@ -398,6 +424,7 @@ public class SumDC extends AbstractConstraint {
                         }
                     }
                 }
+                rescaleLayer(ip[i + 1], 0, ip[i + 1].length - 1);
             }
 
             for (int i = 0; i < n; i++) {
@@ -420,6 +447,7 @@ public class SumDC extends AbstractConstraint {
                     }
                     setLocalBelief(i, v, belief);
                 }
+                rescaleLayer(op[i - 1], 0, op[i - 1].length - 1);
             }
             s = x[0].fillArray(domainValues);
             for (int j = 0; j < s; j++) {
