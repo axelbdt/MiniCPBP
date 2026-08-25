@@ -77,42 +77,83 @@ public class NotEqual extends AbstractConstraint {
     }
 
 
+    /**
+     * Sums of a variable's outside beliefs excluding each value, plus the total.
+     * Returned array r has span+1 entries where span = s.max()-s.min()+1:
+     * r[i] = sum of outside beliefs over the domain values != s.min()+i,
+     * r[span] = sum over the whole domain.
+     * Built from a suffix pass and a prefix pass -- additions only. Never
+     * compute these as complement(p): normalizeBelief rounds a dominant belief
+     * to exactly 1.0, and complement(1.0) manufactures an exact zero
+     * (FIXING_ZEROS.md 3.3).
+     */
+    private double[] othersSum(IntVar s, int pos) {
+        int sMin = s.min();
+        int span = s.max() - sMin + 1;
+        double[] r = new double[span + 1];
+        double run = beliefRep.zero();
+        for (int i = span - 1; i >= 0; i--) {
+            r[i] = run; // sum over values > sMin+i
+            if (s.contains(sMin + i))
+                run = beliefRep.add(run, outsideBelief(pos, sMin + i));
+        }
+        r[span] = run; // total
+        run = beliefRep.zero();
+        for (int i = 0; i < span; i++) {
+            r[i] = beliefRep.add(r[i], run); // += sum over values < sMin+i
+            if (s.contains(sMin + i))
+                run = beliefRep.add(run, outsideBelief(pos, sMin + i));
+        }
+        return r;
+    }
+
     @Override
     public void updateBelief() {
-        // Treatment of x
+        // The message to x on vx is P(y != vx - c): sum y's beliefs over its
+        // other values directly, never 1 - P(y = vx - c).
+        double[] othersY = othersSum(y, 1);
+        int yMin = y.min();
+        double totalY = othersY[othersY.length - 1];
         for (int vx = x.min(); vx <= x.max(); vx++) {
             if (x.contains(vx)) {
                 if (y.contains(vx - c))
-                    setLocalBelief(0, vx, beliefRep.complement(outsideBelief(1, vx - c)));
+                    setLocalBelief(0, vx, othersY[vx - c - yMin]);
                 else
-                    setLocalBelief(0, vx, beliefRep.complement(beliefRep.zero()));
+                    setLocalBelief(0, vx, totalY);
             }
         }
         // Treatment of y
+        double[] othersX = othersSum(x, 0);
+        int xMin = x.min();
+        double totalX = othersX[othersX.length - 1];
         for (int vy = y.min(); vy <= y.max(); vy++) {
             if (y.contains(vy)) {
                 if (x.contains(vy + c))
-                    setLocalBelief(1, vy, beliefRep.complement(outsideBelief(0, vy + c)));
+                    setLocalBelief(1, vy, othersX[vy + c - xMin]);
                 else
-                    setLocalBelief(1, vy, beliefRep.complement(beliefRep.zero()));
+                    setLocalBelief(1, vy, totalX);
             }
         }
     }
 
     public double weightedCounting() {
         double weightedCount = beliefRep.zero();
+        double[] othersY = othersSum(y, 1);
+        int yMin = y.min();
+        double totalY = othersY[othersY.length - 1];
         for (int vx = x.min(); vx <= x.max(); vx++) {
             if (x.contains(vx)) {
                 if (y.contains(vx - c)) {
                     weightedCount = beliefRep.add(weightedCount,
-                                    beliefRep.multiply(outsideBelief(0, vx), beliefRep.complement(outsideBelief(1, vx - c))));
+                                    beliefRep.multiply(outsideBelief(0, vx), othersY[vx - c - yMin]));
                 } else {
-                    weightedCount = beliefRep.add(weightedCount, outsideBelief(0, vx));
+                    weightedCount = beliefRep.add(weightedCount,
+                                    beliefRep.multiply(outsideBelief(0, vx), totalY));
                 }
             }
         }
         Log.constraint("weighted count for "+this.getName()+" constraint: "+ weightedCount);
-        return weightedCount; 
+        return weightedCount;
     }
 
 }

@@ -42,6 +42,16 @@ public class Or extends AbstractConstraint { // x1 or x2 or ... xn
     // same division-is-not-sum-product lesson as Maximum.
     private double[] prefixFalse;
     private double[] suffixFalse;
+    // prefix/suffix "or masses": prefixOr[i] = sum over j<i of
+    // P(x_j=1) * prod_{k<j} P(x_k=0), i.e. the mass of "first true literal is
+    // j<i"; suffixOr[i] symmetric from the right. Together they give the mass
+    // of "at least one other literal is true" as a SUM, never as
+    // complement(product): normalizeBelief rounds a dominant belief to exactly
+    // 1.0 and complement(1.0) manufactures an exact zero (FIXING_ZEROS.md 3.3).
+    private double[] prefixOr;
+    private double[] suffixOr;
+    private double[] fVal; // P(x_i = 0), robust to bound literals
+    private double[] tVal; // P(x_i = 1)
 
 
     /**
@@ -59,6 +69,10 @@ public class Or extends AbstractConstraint { // x1 or x2 or ... xn
         wR = getSolver().getStateManager().makeStateInt(n - 1);
         prefixFalse = new double[n + 1];
         suffixFalse = new double[n + 1];
+        prefixOr = new double[n + 1];
+        suffixOr = new double[n + 1];
+        fVal = new double[n];
+        tVal = new double[n];
         setExactWCounting(true);
     }
 
@@ -113,21 +127,44 @@ public class Or extends AbstractConstraint { // x1 or x2 or ... xn
     @Override
     public void updateBelief() {
         int lo = wL.value(), hi = wR.value();
-        // leave-one-out products of outsideBelief(., 0) over [lo, hi] by
-        // prefix/suffix (see field comment: never by division — an unbound
-        // literal may legitimately carry zero outside mass on false).
+        // per-literal false/true masses, robust to bound literals inside
+        // [lo, hi]: a bound variable's outsideBelief is only written at its
+        // min, the other slot is stale
+        for (int i = lo; i <= hi; i++) {
+            if (x[i].isBound()) {
+                fVal[i] = x[i].min() == 0 ? beliefRep.one() : beliefRep.zero();
+                tVal[i] = x[i].min() == 1 ? beliefRep.one() : beliefRep.zero();
+            } else {
+                fVal[i] = outsideBelief(i, 0);
+                tVal[i] = outsideBelief(i, 1);
+            }
+        }
+        // leave-one-out products of P(x=0) over [lo, hi] by prefix/suffix
+        // (see field comment: never by division — an unbound literal may
+        // legitimately carry zero outside mass on false), and leave-one-out
+        // or-masses by the same construction (never by complement).
         prefixFalse[lo] = beliefRep.one();
-        for (int i = lo; i <= hi; i++)
-            prefixFalse[i + 1] = beliefRep.multiply(prefixFalse[i], outsideBelief(i, 0));
+        prefixOr[lo] = beliefRep.zero();
+        for (int i = lo; i <= hi; i++) {
+            prefixFalse[i + 1] = beliefRep.multiply(prefixFalse[i], fVal[i]);
+            prefixOr[i + 1] = beliefRep.add(prefixOr[i], beliefRep.multiply(tVal[i], prefixFalse[i]));
+        }
         suffixFalse[hi + 1] = beliefRep.one();
-        for (int i = hi; i >= lo; i--)
-            suffixFalse[i] = beliefRep.multiply(suffixFalse[i + 1], outsideBelief(i, 0));
+        suffixOr[hi + 1] = beliefRep.zero();
+        for (int i = hi; i >= lo; i--) {
+            suffixFalse[i] = beliefRep.multiply(suffixFalse[i + 1], fVal[i]);
+            suffixOr[i] = beliefRep.add(tVal[i], beliefRep.multiply(fVal[i], suffixOr[i + 1]));
+        }
         for (int i = lo; i <= hi; i++) {
 	        if (!x[i].isBound()) {
-		        // will be normalized
-		        setLocalBelief(i, 1, beliefRep.one());
-		        setLocalBelief(i, 0, beliefRep.complement(
-		                beliefRep.multiply(prefixFalse[i], suffixFalse[i + 1])));
+                // mass of "some other literal is true", summed directly
+                double orOthers = beliefRep.add(prefixOr[i],
+                        beliefRep.multiply(prefixFalse[i], suffixOr[i + 1]));
+                // mass of "all other literals are false"
+                double allFalseOthers = beliefRep.multiply(prefixFalse[i], suffixFalse[i + 1]);
+                // x_i = 1 satisfies Or whatever the others do: total mass
+                setLocalBelief(i, 1, beliefRep.add(orOthers, allFalseOthers));
+                setLocalBelief(i, 0, orOthers);
 	        }
 	    }
     }

@@ -87,17 +87,26 @@ public class IsEqual extends AbstractConstraint { // b <=> x == c
 
     @Override
     public void updateBelief() {
-        // Treatment of b
-	    setLocalBelief(0, 1, outsideBelief(1, c));
-	    setLocalBelief(0, 0, beliefRep.complement(outsideBelief(1, c)));
-        // Treatment of x
+        // P(x != c) is accumulated as the sum of x's other beliefs, never as
+        // complement(P(x = c)): normalizeBelief rounds a dominant belief to
+        // exactly 1.0 and complement(1.0) manufactures an exact zero
+        // (FIXING_ZEROS.md 3.3).
+        double pEq = beliefRep.zero(), pNeq = beliefRep.zero();
         int nVal = x.fillArray(domainValues);
 	    for (int k = 0; k < nVal; k++) {
-	        setLocalBelief(1, domainValues[k], outsideBelief(0, 0));
+	        int v = domainValues[k];
+	        if (v == c) {
+	            pEq = outsideBelief(1, c);
+	            setLocalBelief(1, v, outsideBelief(0, 1));
+	        } else {
+	            pNeq = beliefRep.add(pNeq, outsideBelief(1, v));
+	            setLocalBelief(1, v, outsideBelief(0, 0));
+	        }
 	    }
-	    if (x.contains(c)) { // set correctly for c
-	        setLocalBelief(1, c, outsideBelief(0, 1));
-	    }
+        // Treatment of b (pEq stays zero when c is outside x's domain,
+        // instead of reading a possibly stale belief slot)
+	    setLocalBelief(0, 1, pEq);
+	    setLocalBelief(0, 0, pNeq);
     }
 
 }

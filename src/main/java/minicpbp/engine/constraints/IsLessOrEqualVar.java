@@ -93,38 +93,88 @@ public class IsLessOrEqualVar extends AbstractConstraint {
 
     @Override
     public void updateBelief() {
-        double belief, beliefSAT;
+        // Every complement is accumulated directly as the mass of its own set
+        // (P(y < vx) alongside P(y >= vx), etc.), never as 1 - p:
+        // normalizeBelief rounds a dominant belief to exactly 1.0, and
+        // complement(1.0) manufactures an exact zero (FIXING_ZEROS.md 3.3).
+        double beliefSAT = beliefRep.zero();   // that x<=y is satisfied
+        double beliefUNSAT = beliefRep.zero(); // that x>y is satisfied
         int vx, vy;
-        // Treatment of x
-        belief = beliefRep.zero();
-        beliefSAT = beliefRep.zero(); // that x<=y is satisfied
-        vy = y.max();
-        for (vx = x.max(); vx >= x.min(); vx--) {
+        // Treatment of x: descending scan accumulates P(y >= vx),
+        // ascending scan accumulates P(y < vx). Two registers, no subtraction.
+        int yMin = y.min();
+        int ySpan = y.max() - yMin + 1;
+        double[] geqY = new double[ySpan]; // geqY[i] = P(y >= yMin+i)
+        double[] ltY = new double[ySpan];  // ltY[i]  = P(y <  yMin+i)
+        double run = beliefRep.zero();
+        for (int i = ySpan - 1; i >= 0; i--) {
+            if (y.contains(yMin + i))
+                run = beliefRep.add(run, outsideBelief(2, yMin + i));
+            geqY[i] = run;
+        }
+        double totalY = run;
+        run = beliefRep.zero();
+        for (int i = 0; i < ySpan; i++) {
+            ltY[i] = run;
+            if (y.contains(yMin + i))
+                run = beliefRep.add(run, outsideBelief(2, yMin + i));
+        }
+        for (vx = x.min(); vx <= x.max(); vx++) {
             if (x.contains(vx)) {
-                while ((vx <= vy) && (vy >= y.min())) {
-                    belief = beliefRep.add(belief, outsideBelief(2, vy));
-                    do vy--; while (!y.contains(vy) && (vy >= y.min()));
+                double pGE, pLT; // P(y >= vx), P(y < vx)
+                if (vx <= yMin) {
+                    pGE = totalY;
+                    pLT = beliefRep.zero();
+                } else if (vx > y.max()) {
+                    pGE = beliefRep.zero();
+                    pLT = totalY;
+                } else {
+                    pGE = geqY[vx - yMin];
+                    pLT = ltY[vx - yMin];
                 }
-		        beliefSAT = beliefRep.add(beliefSAT,beliefRep.multiply(belief,outsideBelief(1,vx)));
-                setLocalBelief(1, vx, beliefRep.add( beliefRep.multiply(belief, outsideBelief(0,1)),
-						     beliefRep.multiply(beliefRep.complement(belief), outsideBelief(0,0)) ));
+                beliefSAT = beliefRep.add(beliefSAT, beliefRep.multiply(pGE, outsideBelief(1, vx)));
+                beliefUNSAT = beliefRep.add(beliefUNSAT, beliefRep.multiply(pLT, outsideBelief(1, vx)));
+                setLocalBelief(1, vx, beliefRep.add( beliefRep.multiply(pGE, outsideBelief(0,1)),
+						     beliefRep.multiply(pLT, outsideBelief(0,0)) ));
             }
         }
-        // Treatment of y
-        belief = beliefRep.zero();
-        vx = x.min();
+        // Treatment of y: P(x <= vy) ascending, P(x > vy) descending.
+        int xMin = x.min();
+        int xSpan = x.max() - xMin + 1;
+        double[] leX = new double[xSpan]; // leX[i] = P(x <= xMin+i)
+        double[] gtX = new double[xSpan]; // gtX[i] = P(x >  xMin+i)
+        run = beliefRep.zero();
+        for (int i = 0; i < xSpan; i++) {
+            if (x.contains(xMin + i))
+                run = beliefRep.add(run, outsideBelief(1, xMin + i));
+            leX[i] = run;
+        }
+        double totalX = run;
+        run = beliefRep.zero();
+        for (int i = xSpan - 1; i >= 0; i--) {
+            gtX[i] = run;
+            if (x.contains(xMin + i))
+                run = beliefRep.add(run, outsideBelief(1, xMin + i));
+        }
         for (vy = y.min(); vy <= y.max(); vy++) {
             if (y.contains(vy)) {
-                while ((vx <= vy) && (vx <= x.max())) {
-                    belief = beliefRep.add(belief, outsideBelief(1, vx));
-                    do vx++; while (!x.contains(vx) && (vx <= x.max()));
+                double pLE, pGT; // P(x <= vy), P(x > vy)
+                if (vy >= x.max()) {
+                    pLE = totalX;
+                    pGT = beliefRep.zero();
+                } else if (vy < xMin) {
+                    pLE = beliefRep.zero();
+                    pGT = totalX;
+                } else {
+                    pLE = leX[vy - xMin];
+                    pGT = gtX[vy - xMin];
                 }
-                setLocalBelief(2, vy, beliefRep.add( beliefRep.multiply(belief, outsideBelief(0,1)),
-						     beliefRep.multiply(beliefRep.complement(belief), outsideBelief(0,0)) ));
+                setLocalBelief(2, vy, beliefRep.add( beliefRep.multiply(pLE, outsideBelief(0,1)),
+						     beliefRep.multiply(pGT, outsideBelief(0,0)) ));
             }
         }
-        // Treatment of b
+        // Treatment of b: both sides are accumulated sums, not 1 - the other
 	    setLocalBelief(0, 1, beliefSAT);
-	    setLocalBelief(0, 0, beliefRep.complement(beliefSAT));
+	    setLocalBelief(0, 0, beliefUNSAT);
     }
 }
