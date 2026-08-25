@@ -822,6 +822,15 @@ public class XCSP implements XCallbacks2 {
 		}
 	}
 
+	/** true iff no two entries are the same factor-graph node (see NotAllEqual) */
+	private static boolean distinctBaseVars(IntVar[] xs) {
+		for (int i = 0; i < xs.length; i++)
+			for (int j = i + 1; j < xs.length; j++)
+				if (xs[i].getBaseVar() == xs[j].getBaseVar())
+					return false;
+		return true;
+	}
+
 	@Override
 	public void buildCtrNotAllEqual(String id, XVarInteger[] list) {
 		// 2026-08-18: implemented for RamseyPartition (gcc corpus widening).
@@ -835,7 +844,7 @@ public class XCSP implements XCallbacks2 {
 			// below, which routes it through n-1 booleans and hides its joint
 			// structure from belief propagation. Default stays 'decomp' so that
 			// every campaign predating the flag reproduces unchanged.
-			if ("global".equals(System.getProperty("minicpbp.nae.post", "decomp"))) {
+			if ("global".equals(System.getProperty("minicpbp.nae.post", "decomp")) && distinctBaseVars(xs)) {
 				minicp.post(notAllEqual(xs));
 				return;
 			}

@@ -93,6 +93,18 @@ public class NotAllEqual extends AbstractConstraint {
         }
         globalMin = lo;
         globalSpan = hi - lo + 1;
+        // The counting below multiplies the positions' messages, which is only
+        // the right sum-product if the positions are independent nodes of the
+        // factor graph. BPGraph identifies a view with the variable it views, so
+        // two positions sharing a base variable are ONE node and the product
+        // would double-count it. Rejected here rather than approximated: the
+        // caller (XCSP.buildCtrNotAllEqual) falls back to the decomposition,
+        // which has no such assumption.
+        for (int i = 0; i < n; i++)
+            for (int j = i + 1; j < n; j++)
+                if (x[i].getBaseVar() == x[j].getBaseVar())
+                    throw new IllegalArgumentException(
+                            "NotAllEqual: positions " + i + " and " + j + " share a base variable");
         total = new double[n];
         others = new double[n][];
         for (int i = 0; i < n; i++) others[i] = new double[x[i].max() - x[i].min() + 1];
@@ -109,6 +121,21 @@ public class NotAllEqual extends AbstractConstraint {
     @Override
     public void post() {
         if (n < 2) throw INCONSISTENCY;   // a single variable is always "all equal"
+        // Register ONCE, here, at the level the constraint is posted at -- not
+        // from propagate(). IntVar.propagateOnBind pushes unconditionally onto a
+        // StateStack with no duplicate check, so re-registering on every
+        // propagation grows each variable's onBind list without bound along a
+        // path and makes scheduleAll walk the duplicates on every bind. The
+        // propagation queue de-duplicates (MiniCP.schedule tests isScheduled),
+        // so this was never a correctness problem -- only wasted work on the
+        // hottest path in the solver.
+        switch (getSolver().getMode()) {
+            case BP:
+                break;
+            case SP:
+            case SBP:
+                for (int i = 0; i < n; i++) x[i].propagateOnBind(this);
+        }
         propagate();
     }
 
@@ -130,10 +157,7 @@ public class NotAllEqual extends AbstractConstraint {
                 free = i;
             }
         }
-        if (bound == 0) {
-            registerOnBind();
-            return;
-        }
+        if (bound == 0) return;
         // entailed as soon as some variable cannot take the common value
         for (int i = 0; i < n; i++) {
             if (!x[i].isBound() && !x[i].contains(common)) {
@@ -145,19 +169,6 @@ public class NotAllEqual extends AbstractConstraint {
         if (bound == n - 1) {                    // one left: it must differ
             x[free].remove(common);
             setActive(false);
-            return;
-        }
-        registerOnBind();
-    }
-
-    private void registerOnBind() {
-        switch (getSolver().getMode()) {
-            case BP:
-                break;
-            case SP:
-            case SBP:
-                for (int i = 0; i < n; i++)
-                    if (!x[i].isBound()) x[i].propagateOnBind(this);
         }
     }
 
