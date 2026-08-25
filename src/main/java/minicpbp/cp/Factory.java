@@ -570,6 +570,18 @@ public final class Factory {
     }
 
     /**
+     * Returns a not-all-equal constraint: the variables are not all assigned
+     * the same value. This relation is enforced by the {@link NotAllEqual}
+     * constraint posted by calling this method.
+     *
+     * @param x the variables in the scope of the constraint
+     * @return a not-all-equal constraint over x
+     */
+    public static Constraint notAllEqual(IntVar[] x) {
+        return new NotAllEqual(x);
+    }
+
+    /**
      * Computes a variable that is the maximum of a set of variables.
      * This relation is enforced by the {@link Maximum} constraint
      * posted by calling this method.

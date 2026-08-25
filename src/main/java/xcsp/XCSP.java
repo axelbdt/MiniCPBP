@@ -830,6 +830,15 @@ public class XCSP implements XCallbacks2 {
 			return;
 		try {
 			IntVar[] xs = mapVarArray(list);
+			// 2026-08-25 (GCC_EXPERIMENT.md §14): -Dminicpbp.nae.post=global posts
+			// the relation as ONE factor instead of the reified decomposition
+			// below, which routes it through n-1 booleans and hides its joint
+			// structure from belief propagation. Default stays 'decomp' so that
+			// every campaign predating the flag reproduces unchanged.
+			if ("global".equals(System.getProperty("minicpbp.nae.post", "decomp"))) {
+				minicp.post(notAllEqual(xs));
+				return;
+			}
 			BoolVar[] diff = new BoolVar[xs.length - 1];
 			for (int i = 1; i < xs.length; i++)
 				diff[i - 1] = isNotEqual(xs[i], xs[0]);
