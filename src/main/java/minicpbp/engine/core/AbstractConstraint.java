@@ -56,6 +56,8 @@ public abstract class AbstractConstraint implements Constraint {
     private double[][] prevLocalBelief; // local belief as it was before updateBelief()
     private double[] msgResidual;     // per scope position, how far the last message moved
     private boolean[] cavityUniform;  // per scope position, was the cavity replaced by uniform?
+    private boolean[] cavityExact;    // ... or is it the true quotient on every value?
+    private boolean[] cavityZero;     // ... and is that true quotient zero on every value?
     private boolean duplicateScope;   // two scope positions share one base variable
     private double weight; // an optional nonnegative weight applied to the constraint's local belief
     protected Belief beliefRep;
@@ -440,8 +442,10 @@ public abstract class AbstractConstraint implements Constraint {
      * message; it is kept here before damping is applied, since damping must
      * affect what the factor reads and not what the search reads.
      * <p>
-     * The quotient is not always defined, and the three cases are handled
-     * differently, each counted:
+     * The quotient is not always the true cavity, and only then is a rebuild
+     * owed. The rule is one line: <em>resync exactly when the vector that was
+     * multiplied into the marginal was not the true cavity.</em> Three cases,
+     * each counted:
      * <ul>
      * <li>the old message was exactly zero for some value.
      * {@code IntVar.sendMessage} answers uniform there, which is the right
@@ -449,18 +453,24 @@ public abstract class AbstractConstraint implements Constraint {
      * It only matters where that message stops being zero — while it stays
      * zero the product is zero either way — and then the variable is handed to
      * {@code resync}, which rebuilds the exact product over its factors;</li>
-     * <li>the whole cavity has no mass, or left the representable range
-     * because the message divided out was denormal. The vector carries no
-     * information and a weighted counter fed a vector of zeros answers NaN
-     * rather than zero, so "uniform" is used instead;</li>
-     * <li>the reconstructed marginal has no mass: {@code resync} again.</li>
-     * </ul>
-     * In the second case the uniform vector is the right <em>input</em> for the
-     * weighted counter but it is not the cavity, so publishing
-     * {@code cavity * local} would drop every other factor's message from the
-     * product and break the invariant for the rest of the invocation. That
-     * variable is therefore resynced too, counted as
+     * <li>the quotient left the representable range because the message divided
+     * out was denormal. The vector carries no information and a weighted counter
+     * fed a vector of zeros answers NaN rather than zero, so "uniform" is used
+     * instead. It is the right <em>input</em> for the counter but it is not the
+     * cavity, so publishing {@code cavity * local} would drop every other
+     * factor's message from the product and break the invariant for the rest of
+     * the invocation; that variable is resynced, counted as
      * {@code BPStats.resyncCavityFallback} (BP_WARM_START_EXPERIMENT.md D4).
+     * Measured frequency: zero on Ramsey and EFPA, 26 in 31M on Sports;</li>
+     * <li>the quotient is zero on every value. This is <em>not</em> a failure:
+     * with no zero divisor involved, every value of the variable is excluded by
+     * some factor other than this one, and the zero vector is the exact cavity.
+     * The counter is fed uniform because it cannot consume a zero vector, but
+     * the marginal is published from the true zero cavity and no rebuild is
+     * owed. Likewise a zero product built from an exact cavity is the exact
+     * marginal. Together these were 93.5% of the resyncs on
+     * RamseyPartition-3-24 (BP_COST_PROFILE.md Lever B).</li>
+     * </ul>
      *
      * @param resync recomputes a variable's marginal from all its factors, or
      *               null to accept the uniform-cavity approximation
@@ -474,6 +484,8 @@ public abstract class AbstractConstraint implements Constraint {
             prevLocalBelief = new double[vars.length][];
             msgResidual = new double[vars.length];
             cavityUniform = new boolean[vars.length];
+            cavityExact = new boolean[vars.length];
+            cavityZero = new boolean[vars.length];
             for (int i = 0; i < vars.length; i++) {
                 cavityBelief[i] = new double[outsideBelief[i].length];
                 prevLocalBelief[i] = new double[outsideBelief[i].length];
@@ -485,6 +497,8 @@ public abstract class AbstractConstraint implements Constraint {
         // are about to be overwritten
         for (int i = 0; i < vars.length; i++) {
             cavityUniform[i] = false;
+            cavityZero[i] = false;
+            cavityExact[i] = false;
             if (vars[i].isBound()) {
                 setOutsideBelief(i, vars[i].min(), beliefRep.one());
                 continue;
@@ -506,17 +520,15 @@ public abstract class AbstractConstraint implements Constraint {
             // normalises once per sweep for the engine's entropy tests).
             if (zeroMessage) vars[i].normalizeMarginals();
             // The cavity is a quotient, so it can leave the representable range
-            // where the message being divided out is denormal, and it can lose
-            // all its mass where a domain change removed every value that
-            // carried any. Both give a vector that carries no information, and
-            // feeding one to a weighted counter produces NaN rather than zero
-            // (setLocalBelief deliberately does not mask NaN, and SumDC's
-            // forward/backward DP propagates it). Answer "uniform" instead,
-            // which is what IntVar.sendMessage already answers for a single
-            // zero-valued message, and count it. Warm-started marginals reach
-            // the out-of-range case; the empty case is reached on the ordinary
-            // cold path too, wherever every value of a variable is excluded by
-            // some factor other than this one.
+            // where the message being divided out is denormal. That vector
+            // carries no information, and feeding one to a weighted counter
+            // produces NaN rather than zero (setLocalBelief deliberately does
+            // not mask NaN, and SumDC's forward/backward DP propagates it), so
+            // "uniform" is used instead -- the answer IntVar.sendMessage already
+            // gives for a single zero-valued message -- and phase 3 repairs the
+            // marginal. Measured on RamseyPartition-3-24 and EFPA-3-7-7-07 with
+            // topo + warm start: zero occurrences, and 26 in 31M positions on
+            // SportsScheduling-10 (BP_COST_PROFILE.md Lever B).
             boolean bad = false, empty = true;
             for (int j = 0; j < s; j++) {
                 int val = domainValues[j];
@@ -525,7 +537,12 @@ public abstract class AbstractConstraint implements Constraint {
                 else if (!beliefRep.isZero(c)) empty = false;
                 setOutsideBelief(i, val, c);
             }
-            if (bad || empty) {
+            // The cavity is exact unless the quotient was unusable (bad) or some
+            // value's divisor was zero, where sendMessage answers uniform rather
+            // than the quotient. Phase 3 needs to know, because a marginal built
+            // from an exact cavity is the true product and never needs repair.
+            cavityExact[i] = !bad && !zeroMessage;
+            if (bad) {
                 minicpbp.util.BPStats.cavityFallbacks++;
                 // The uniform answer is the right input for a weighted counter,
                 // but it is NOT the cavity: writing cavity*local into the
@@ -537,12 +554,34 @@ public abstract class AbstractConstraint implements Constraint {
                 cavityUniform[i] = true;
                 double uniform = beliefRep.divide(beliefRep.one(), (double) s);
                 for (int j = 0; j < s; j++) setOutsideBelief(i, domainValues[j], uniform);
+                for (int j = 0; j < s; j++)
+                    cavityBelief[i][domainValues[j] - ofs[i]] = uniform;
+            } else if (empty) {
+                // An all-zero cavity is not a failure: it is the exact answer.
+                // No divisor was zero here (a zero divisor yields a nonzero
+                // uniform, which would have cleared `empty`), so every value's
+                // quotient is a true quotient, and every one came out zero --
+                // every value of this variable is excluded by some factor other
+                // than this one. Two consequences, and the second is where the
+                // cost was: the zero vector goes into cavityBelief so phase 3
+                // publishes the correct zero product, and the counter is fed
+                // uniform because it cannot consume an all-zero input. Before
+                // 2026-08-25 both got uniform and the marginal was rebuilt from
+                // scratch over every incident factor, which on
+                // RamseyPartition-3-24 was 1 433 289 of 3 220 886 resyncs, each
+                // recomputing the same zero (BP_COST_PROFILE.md Lever B).
+                minicpbp.util.BPStats.cavityExactZero++;
+                cavityZero[i] = true;
+                for (int j = 0; j < s; j++)
+                    cavityBelief[i][domainValues[j] - ofs[i]] = beliefRep.zero();
+                double uniform = beliefRep.divide(beliefRep.one(), (double) s);
+                for (int j = 0; j < s; j++) setOutsideBelief(i, domainValues[j], uniform);
             } else {
                 normalizeOutsideCached(i, s);
-            }
-            for (int j = 0; j < s; j++) {
-                int val = domainValues[j];
-                cavityBelief[i][val - ofs[i]] = outsideBelief(i, val);
+                for (int j = 0; j < s; j++) {
+                    int val = domainValues[j];
+                    cavityBelief[i][val - ofs[i]] = outsideBelief(i, val);
+                }
             }
             if (cp.dampingMessages()) {
                 if (cp.prevOutsideBeliefRecorded())
@@ -592,14 +631,32 @@ public abstract class AbstractConstraint implements Constraint {
                 vars[i].setMarginal(val, m);
             }
             if (msgResidual[i] > residual) residual = msgResidual[i];
-            if (resync != null && (resurrected || mass <= 0.0 || duplicateScope || cavityUniform[i])) {
+            // A product with no mass left never needs a rebuild, whatever cavity
+            // it came from, because the true marginal is zero in every case that
+            // reaches here. Every published m is zero, and for each value either
+            //   b_new == 0                -> true marginal = cavity_true * 0 = 0
+            //   the cavity used was zero  -> only the true quotient is ever zero
+            //                                (a uniform placeholder is positive),
+            //                                so cavity_true = 0 and so is the
+            //                                product.
+            // A value whose divisor was zero and whose new message is nonzero
+            // gives m > 0, so it cannot be in this branch; that case is the
+            // resurrected test, which is where a rebuild does carry information.
+            // resync would recompute the same zero from the same factors -- and
+            // would not repair an underflowed zero either, since it multiplies
+            // the same numbers. On RamseyPartition-3-24 this trigger was
+            // 1 769 208 of 3 565 985 resyncs (BP_COST_PROFILE.md Lever B).
+            boolean noMass = mass <= 0.0;
+            assert !cavityZero[i] || noMass : "an all-zero cavity must give a zero product";
+            if (noMass) minicpbp.util.BPStats.zeroMassLeftAlone++;
+            if (resync != null && (resurrected || duplicateScope
+                    || (cavityUniform[i] && !noMass))) {
                 minicpbp.util.BPStats.marginalResyncs++;
                 if (resurrected) minicpbp.util.BPStats.resyncResurrected++;
-                if (mass <= 0.0) minicpbp.util.BPStats.resyncZeroMass++;
                 if (duplicateScope) minicpbp.util.BPStats.resyncDuplicateScope++;
-                if (cavityUniform[i]) minicpbp.util.BPStats.resyncCavityFallback++;
+                if (cavityUniform[i] && !noMass) minicpbp.util.BPStats.resyncCavityFallback++;
                 resync.resync(vars[i].getBaseVar());
-            } else if (mass < SCALE_FLOOR || mass > SCALE_CEIL) {
+            } else if (!noMass && (mass < SCALE_FLOOR || mass > SCALE_CEIL)) {
                 vars[i].normalizeMarginals(); // keep the product away from underflow
             }
         }

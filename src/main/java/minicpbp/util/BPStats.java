@@ -48,7 +48,9 @@ public final class BPStats {
     public static long marginalResyncs;
     /** resyncs because a message that was zero became nonzero */
     public static long resyncResurrected;
-    /** resyncs because the rebuilt marginal had no mass left */
+    /** resyncs because the rebuilt marginal had no mass left. Structurally 0
+     *  since 2026-08-25: a zero product is the exact marginal, see
+     *  zeroMassLeftAlone. Kept so old and new runs can be compared. */
     public static long resyncZeroMass;
     /** resyncs because two scope positions are views of one variable */
     public static long resyncDuplicateScope;
@@ -56,8 +58,17 @@ public final class BPStats {
      *  factor's message from the product (BP_WARM_START_EXPERIMENT.md D4) */
     public static long resyncCavityFallback;
     /** cavity distributions replaced by uniform because the quotient left the
-     *  representable range or lost all its mass (warm start only, in practice) */
+     *  representable range. Before 2026-08-25 this also counted the all-zero
+     *  quotient, which is not a failure at all: see cavityExactZero. */
     public static long cavityFallbacks;
+    /** cavity distributions that came out zero on every value, which is the
+     *  exact answer -- every value of the variable is excluded by some factor
+     *  other than this one -- and needs no repair (BP_COST_PROFILE.md Lever B) */
+    public static long cavityExactZero;
+    /** publications whose product carried no mass and were left alone, the
+     *  zero being the exact marginal. These were resyncZeroMass before
+     *  2026-08-25. */
+    public static long zeroMassLeftAlone;
     /** schedules built (a rebuild is one dependency-graph construction) */
     public static long schedulesBuilt;
     /** schedules reused without rebuilding */
@@ -138,6 +149,8 @@ public final class BPStats {
                 + " bpResyncDuplicateScope=" + resyncDuplicateScope
                 + " bpResyncCavityFallback=" + resyncCavityFallback
                 + " bpCavityFallbacks=" + cavityFallbacks
+                + " bpCavityExactZero=" + cavityExactZero
+                + " bpZeroMassLeftAlone=" + zeroMassLeftAlone
                 + " bpWarmEntryRebuilds=" + warmEntryRebuilds
                 + " bpWarmEntryMs=" + (warmEntryNanos / 1000000)
                 + " bpWarmEntryColdFallbacks=" + warmEntryColdFallbacks
