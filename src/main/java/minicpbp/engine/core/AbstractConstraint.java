@@ -252,6 +252,68 @@ public abstract class AbstractConstraint implements Constraint {
         double set(int i, int val, double b);
     }
 
+    /* 2026-08-25 (BP_COST_PROFILE.md Lever C): monomorphic normalizations that
+     * reuse an already-filled domainValues[0..s-1].
+     *
+     * normalizeBelief() calls vars[i].fillArray() itself and reaches the belief
+     * arrays through the getBelief/setBelief functional interfaces, which are
+     * instantiated from six distinct lambda pairs and are therefore megamorphic
+     * at the call site. In updateMessagesInPlace the domain has just been
+     * filled, so the fillArray is pure waste: the hot path walked each domain
+     * ~14 times where 3 passes suffice. Semantics are identical to
+     * normalizeBelief, including setLocalBelief's negative clamp. */
+    private void normalizeOutsideCached(int i, int s) {
+        double[] ob = outsideBelief[i];
+        int o = ofs[i];
+        if (s == 1) { // variable is bound
+            ob[domainValues[0] - o] = beliefRep.one();
+            return;
+        }
+        for (int j = 0; j < s; j++)
+            beliefValues[j] = ob[domainValues[j] - o];
+        double normalizingConstant = beliefRep.summation(beliefValues, s);
+        if (beliefRep.isZero(normalizingConstant)) // soon-to-be-empty domain
+            return;
+        for (int j = 0; j < s; j++)
+            ob[domainValues[j] - o] = beliefRep.divide(beliefValues[j], normalizingConstant);
+    }
+
+    private void normalizeLocalCached(int i, int s) {
+        StateDouble[] lb = localBelief[i];
+        int o = ofs[i];
+        if (s == 1) { // variable is bound
+            lb[domainValues[0] - o].setValue(beliefRep.one());
+            return;
+        }
+        for (int j = 0; j < s; j++)
+            beliefValues[j] = lb[domainValues[j] - o].value();
+        double normalizingConstant = beliefRep.summation(beliefValues, s);
+        if (beliefRep.isZero(normalizingConstant)) // soon-to-be-empty domain
+            return;
+        for (int j = 0; j < s; j++) {
+            double b = beliefRep.divide(beliefValues[j], normalizingConstant);
+            if (beliefRep.rep2std(b) < 0) { // as in setLocalBelief
+                minicpbp.util.BeliefClampStats.recordClamp(beliefRep.rep2std(b));
+                b = beliefRep.zero();
+            }
+            lb[domainValues[j] - o].setValue(b);
+        }
+    }
+
+    private void dampenMessagesCached(int i, int s) {
+        double lambda = beliefRep.std2rep(cp.dampingFactor());
+        double oneMinusLambda = beliefRep.complement(lambda);
+        double[] ob = outsideBelief[i];
+        StateDouble[] pb = prevOutsideBelief[i];
+        int o = ofs[i];
+        for (int j = 0; j < s; j++) {
+            int k = domainValues[j] - o;
+            ob[k] = beliefRep.add(beliefRep.multiply(lambda, ob[k]),
+                    beliefRep.multiply(oneMinusLambda, pb[k].value()));
+        }
+        normalizeOutsideCached(i, s);
+    }
+
     private void normalizeBelief(int i, getBelief f1, setBelief f2) {
         int s = vars[i].fillArray(domainValues);
         if (s == 1) { // variable is bound
@@ -416,18 +478,8 @@ public abstract class AbstractConstraint implements Constraint {
                 cavityBelief[i] = new double[outsideBelief[i].length];
                 prevLocalBelief[i] = new double[outsideBelief[i].length];
             }
-            // Two positions of one scope may be views of the same variable
-            // (c(x, minus(x))), and then they share a marginal: writing the
-            // second one would discard the first message instead of
-            // multiplying it in. Rare, and the scope never changes, so it is
-            // detected once and those marginals are rebuilt exactly.
-            java.util.Set<IntVar> seen = new java.util.HashSet<>();
-            for (int i = 0; i < vars.length; i++) {
-                if (!seen.add(vars[i].getBaseVar())) {
-                    duplicateScope = true;
-                    break;
-                }
-            }
+            // duplicateScope is a by-product of the base->positions index
+            if (posOfBase == null) buildPosOfBase();
         }
         // phase 1: read the cavity distributions, remembering the messages that
         // are about to be overwritten
@@ -486,8 +538,7 @@ public abstract class AbstractConstraint implements Constraint {
                 double uniform = beliefRep.divide(beliefRep.one(), (double) s);
                 for (int j = 0; j < s; j++) setOutsideBelief(i, domainValues[j], uniform);
             } else {
-                normalizeBelief(i, (j, val) -> outsideBelief(j, val),
-                        (j, val, b) -> setOutsideBelief(j, val, b));
+                normalizeOutsideCached(i, s);
             }
             for (int j = 0; j < s; j++) {
                 int val = domainValues[j];
@@ -495,7 +546,7 @@ public abstract class AbstractConstraint implements Constraint {
             }
             if (cp.dampingMessages()) {
                 if (cp.prevOutsideBeliefRecorded())
-                    dampenMessages(i);
+                    dampenMessagesCached(i, s);
                 for (int j = 0; j < s; j++) {
                     int val = domainValues[j];
                     setPrevOutsideBelief(i, val, outsideBelief(i, val));
@@ -509,9 +560,8 @@ public abstract class AbstractConstraint implements Constraint {
         for (int i = 0; i < vars.length; i++) {
             msgResidual[i] = 0.0;
             if (vars[i].isBound()) continue; // a "certainly true" message changes nothing
-            normalizeBelief(i, (j, val) -> localBelief(j, val),
-                    (j, val, b) -> setLocalBelief(j, val, b));
             int s = vars[i].fillArray(domainValues);
+            normalizeLocalCached(i, s);
             double mass = 0.0;
             boolean resurrected = false;
             for (int j = 0; j < s; j++) {
@@ -577,9 +627,43 @@ public abstract class AbstractConstraint implements Constraint {
      * Used to rebuild a marginal as the exact product of the messages it
      * receives.
      */
-    public void contributeMarginal(IntVar base) {
+    /* 2026-08-25 (BP_COST_PROFILE.md Lever C): base variable -> the scope
+     * positions that are views of it, built once because the scope never
+     * changes. contributeMarginal used to scan the whole scope with a virtual
+     * isBound() and getBaseVar() per position to find the one or two positions
+     * that match; BPGraph.resync calls it once per incident factor per resync,
+     * and on the Ramsey family the resync path is 69% of BP wall clock. */
+    private java.util.IdentityHashMap<IntVar, int[]> posOfBase;
+
+    private void buildPosOfBase() {
+        java.util.IdentityHashMap<IntVar, int[]> m = new java.util.IdentityHashMap<>();
         for (int i = 0; i < vars.length; i++) {
-            if (vars[i].isBound() || vars[i].getBaseVar() != base) continue;
+            IntVar base = vars[i].getBaseVar();
+            int[] cur = m.get(base);
+            if (cur == null) {
+                m.put(base, new int[]{i});
+            } else {
+                // Two positions of one scope may be views of the same variable
+                // (c(x, minus(x))), and then they share a marginal: writing the
+                // second one would discard the first message instead of
+                // multiplying it in. Rare, and the scope never changes, so it is
+                // detected once and those marginals are rebuilt exactly.
+                int[] nxt = java.util.Arrays.copyOf(cur, cur.length + 1);
+                nxt[cur.length] = i;
+                m.put(base, nxt);
+                duplicateScope = true;
+            }
+        }
+        posOfBase = m;
+    }
+
+    public void contributeMarginal(IntVar base) {
+        if (posOfBase == null) buildPosOfBase();
+        int[] pos = posOfBase.get(base);
+        if (pos == null) return; // base is not in this scope
+        for (int p = 0; p < pos.length; p++) {
+            int i = pos[p];
+            if (vars[i].isBound()) continue;
             int s = vars[i].fillArray(domainValues);
             for (int j = 0; j < s; j++) {
                 int val = domainValues[j];

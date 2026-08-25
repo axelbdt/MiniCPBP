@@ -81,7 +81,13 @@ public class StdBelief implements Belief {
     }
 
     public  double pow(double a, double b) {
-	return Math.pow(a,b);
+	// 2026-08-25 (BP_COST_PROFILE.md Lever C): bit-exact short circuit, as in
+	// LogBelief.pow. The exponent is the constraint weight, which is 1.0 for
+	// every constraint under ConstraintWeighingScheme.SAME (the default), so
+	// Math.pow was called once per belief cell to return its first argument.
+	// Math.pow(a,1.0) == a exactly, so this changes no result. Worth
+	// 1.20x-1.31x on the BP arm.
+	return (b == 1.0) ? a : Math.pow(a,b);
     }
 
 }
