@@ -84,6 +84,13 @@ public abstract class AbstractConstraint implements Constraint {
 
     private int failureCount;
 
+    // delta-sparsity probe (BP_PROBE_PROTOCOL.md Probe A): shadow of the
+    // previous update's input, lazily allocated, only when the probe is on
+    private double[][] probePrevOB;
+    private int[] probePrevSize;
+    private int[] probeValues;
+    private long probeEpoch = -1;
+
     public AbstractConstraint(Solver cp, IntVar[] vars) {
         this.cp = cp;
         active = cp.getStateManager().makeStateBool(true);
@@ -407,7 +414,8 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     public void sendMessages() {
-        updateBelief();
+        if (!minicpbp.util.DeltaProbe.HOOK || !probeBeforeUpdateBelief())
+            updateBelief();
  //       System.out.println(getName()+".sendMessages()");
         for (int i = 0; i < vars.length; i++) {
             if (!vars[i].isBound()) { // if the variable is bound, it is pointless to send a "certainly true" message
@@ -603,7 +611,8 @@ public abstract class AbstractConstraint implements Constraint {
             }
         }
         // phase 2: the weighted counting
-        updateBelief();
+        if (!minicpbp.util.DeltaProbe.HOOK || !probeBeforeUpdateBelief())
+            updateBelief();
         // phase 3: publish the new messages into the marginals
         double residual = 0.0;
         for (int i = 0; i < vars.length; i++) {
@@ -776,6 +785,107 @@ public abstract class AbstractConstraint implements Constraint {
                 Log.gradient(domainValues[j]+": "+gradient);
             }
         }
+    }
+
+    /**
+     * Shared hook of the delta-sparsity probe (BP_PROBE_PROTOCOL.md Probe A)
+     * and the epsilon-reuse pilot (Probe D). Compares the input that
+     * updateBelief() is about to consume — the outsideBelief cells of the
+     * in-domain values of the unbound scope positions — against a shadow copy
+     * of the input at this factor's LAST ACTUAL COMPUTE.
+     * <p>
+     * Probe A records the delta statistics. Probe D additionally decides to
+     * skip updateBelief() when (i) every cell moved by ≤ eps and no domain
+     * size changed, and (ii) the last compute happened in the SAME BP
+     * invocation — no backtrack can occur inside one invocation, so the
+     * stored localBelief provably corresponds to the shadowed input, whereas
+     * across invocations restoreState may have rewound localBelief
+     * independently of this untrailed shadow. The shadow is refreshed only on
+     * compute, so drift since the last compute stays bounded by eps.
+     * <p>
+     * Called from the two schedule-side updateBelief() call sites
+     * (sendMessages, phase 2 of updateMessagesInPlace), never from the offline
+     * gradients() path, and only when {@code DeltaProbe.HOOK}, which is static
+     * final: dead code otherwise.
+     *
+     * @return true when updateBelief() should be SKIPPED (Probe D accepted the
+     * stored local beliefs); always false when epsilon-reuse is off
+     */
+    private boolean probeBeforeUpdateBelief() {
+        if (probePrevOB == null) {
+            minicpbp.util.DeltaProbe.install();
+            probePrevOB = new double[vars.length][];
+            probePrevSize = new int[vars.length];
+            probeValues = new int[domainValues.length];
+            for (int i = 0; i < vars.length; i++) {
+                probePrevOB[i] = new double[outsideBelief[i].length];
+                probePrevSize[i] = -1; // never observed: dirty by definition
+            }
+        }
+        // pass 1: compare only (the shadow must survive a skip unchanged)
+        int rows = 0, changed = 0, firstDirty = -1, lastDirty = -1;
+        double maxDelta = 0.0;
+        boolean structural = false;
+        for (int i = 0; i < vars.length; i++) {
+            if (vars[i].isBound()) continue;
+            int row = rows++;
+            int s = vars[i].fillArray(probeValues);
+            boolean dirty = false;
+            // a domain whose size changed is a structural change of the input;
+            // set-content changes at equal size are caught cell-wise below
+            // (the shadow cell of a value absent from the previous domain holds
+            // the value from an older visit, which matches bitwise only by
+            // coincidence)
+            if (s != probePrevSize[i]) {
+                dirty = true;
+                structural = true;
+                maxDelta = 1.0;
+            }
+            double[] prev = probePrevOB[i];
+            for (int j = 0; j < s; j++) {
+                int idx = probeValues[j] - ofs[i];
+                double cur = outsideBelief[i][idx];
+                if (Double.doubleToRawLongBits(cur) != Double.doubleToRawLongBits(prev[idx])) {
+                    dirty = true;
+                    double d = Math.abs(beliefRep.rep2std(cur) - beliefRep.rep2std(prev[idx]));
+                    if (d > maxDelta) maxDelta = d;
+                }
+            }
+            if (dirty) {
+                changed++;
+                if (firstDirty < 0) firstDirty = row;
+                lastDirty = row;
+            }
+        }
+        if (rows == 0) return false; // trivial update; let it run
+        long inv = minicpbp.util.BPStats.invocations;
+        // probeEpoch = invocation of the last COMPUTE
+        int bucket = (probeEpoch == inv) ? 1 : 0;
+        if (minicpbp.util.DeltaProbe.ENABLED) {
+            String cls = getClass().getSimpleName();
+            if (cls.isEmpty()) cls = (name == null ? "anonymous" : name);
+            minicpbp.util.DeltaProbe.record(cls, bucket, rows, changed, firstDirty, lastDirty, maxDelta);
+        }
+        if (minicpbp.util.DeltaProbe.EPS_REUSE >= 0) {
+            minicpbp.util.DeltaProbe.epsChecked++;
+            if (bucket == 1 && !structural && maxDelta <= minicpbp.util.DeltaProbe.EPS_REUSE) {
+                minicpbp.util.DeltaProbe.epsSkipped++;
+                return true; // shadow and epoch untouched: still the last compute's
+            }
+        }
+        // pass 2: this update WILL compute; refresh the shadow to its input
+        for (int i = 0; i < vars.length; i++) {
+            if (vars[i].isBound()) continue;
+            int s = vars[i].fillArray(probeValues);
+            double[] prev = probePrevOB[i];
+            for (int j = 0; j < s; j++) {
+                int idx = probeValues[j] - ofs[i];
+                prev[idx] = outsideBelief[i][idx];
+            }
+            probePrevSize[i] = s;
+        }
+        probeEpoch = inv;
+        return false;
     }
 
     /**
