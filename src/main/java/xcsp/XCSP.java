@@ -2148,12 +2148,23 @@ public class XCSP implements XCallbacks2 {
 
 	private static boolean damp = false;
 
+	/**
+	 * INTENTIONALLY INERT (BP_COST_PROFILE.md 1.4 / Part 4 item 4). Damping is
+	 * decided by {@code MiniCP.BPtuneDamping} at the root, and whatever factor
+	 * it lands on stays in force for the whole search; this setter was never
+	 * forwarded to the solver ({@code minicp.setDamp} call deliberately absent
+	 * from {@code solve()}). Kept so existing harness callers compile, and
+	 * documented so nobody believes {@code damp(false)} disables damping.
+	 * Forwarding it would change every measured arm's behaviour and therefore
+	 * requires a registered protocol and new campaigns, not a reconnect.
+	 */
 	public void damp(boolean damp) {
 		XCSP.damp = damp;
 	}
 
 	private static double dampingFactor = 0.5;
 
+	/** INTENTIONALLY INERT — see {@link #damp(boolean)}. */
 	public void dampingFactor(double dampingFactor) {
 		XCSP.dampingFactor = dampingFactor;
 	}
@@ -2239,8 +2250,8 @@ public class XCSP implements XCallbacks2 {
 		minicp.setTraceEntropyFlag(traceEntropy);
 		minicp.setMaxIter(maxIter);
 //		minicp.setDynamicStopBP(dynamicStopBP);
-//		minicp.setDamp(damp);
-//		minicp.setDampingFactor(dampingFactor);
+		// setDamp / setDampingFactor deliberately NOT forwarded: damping is
+		// decided by BPtuneDamping at the root. See damp(boolean) above.
 //		minicp.setVariationThreshold(variationThreshold);
 
 		if (hasFailed) {

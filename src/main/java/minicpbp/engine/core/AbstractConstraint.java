@@ -19,7 +19,7 @@
 package minicpbp.engine.core;
 
 import minicpbp.state.StateBool;
-import minicpbp.state.StateDouble;
+import minicpbp.state.StateDoubleArray;
 
 import minicpbp.util.Belief;
 import minicpbp.util.Log;
@@ -47,9 +47,21 @@ public abstract class AbstractConstraint implements Constraint {
     /** incremental dirty seeding: is the stored message stale on this path? */
     private final StateBool bpStale;
 
-    private StateDouble[][] localBelief;
+    // one restorable row per scope position (BP_COST_PROFILE.md Part 4 item
+    // 5, deep version): the row snapshots once per level on first write, so a
+    // localBelief read is a plain array access instead of a StateDouble
+    // double-indirection plus virtual call, and a row rewrite costs one trail
+    // entry instead of one per cell
+    private StateDoubleArray[] localBelief;
     private double[][] outsideBelief;
-    private StateDouble[][] prevOutsideBelief; // needed for message damping
+    // needed for message damping. Deliberately NOT trailed (BP_COST_PROFILE.md
+    // Part 4 item 4): it is written during sweep k and read during sweep k+1 of
+    // the SAME invocation, behind cp.prevOutsideBeliefRecorded(), and that flag
+    // is set false at every invocation entry (coldReset, warmEntry,
+    // BPtuneDamping). No backtrack can occur between two sweeps of one
+    // invocation, so no value is ever read across a restore, and trailing it
+    // only doubled the trailed-write traffic of every damped sweep.
+    private double[][] prevOutsideBelief;
     // scratch state of the in-place (Gauss-Seidel) factor update, allocated on
     // first use so the flooding schedule pays nothing for it
     private double[][] cavityBelief;  // variable-to-constraint message before damping
@@ -89,22 +101,22 @@ public abstract class AbstractConstraint implements Constraint {
                 // will be set in MiniCP.computeMinArity()
                 break;
         }
-        localBelief = new StateDouble[vars.length][];
+        localBelief = new StateDoubleArray[vars.length];
         ofs = new int[vars.length];
         outsideBelief = new double[vars.length][];
-        prevOutsideBelief = new StateDouble[vars.length][];
+        prevOutsideBelief = new double[vars.length][];
 
         maxDomainSize = 0;
         for (int i = 0; i < vars.length; i++) {
             vars[i].registerConstraint(this);
             ofs[i] = vars[i].min();
-            localBelief[i] = new StateDouble[vars[i].max() - vars[i].min() + 1];
+            // no belief yet; initialized to ONE (certainly true) in order to
+            // retrieve the first var-to-constraint msg correctly
+            localBelief[i] = cp.getStateManager().makeStateDoubleArray(
+                    vars[i].max() - vars[i].min() + 1, beliefRep.one());
             outsideBelief[i] = new double[vars[i].max() - vars[i].min() + 1];
-            prevOutsideBelief[i] = new StateDouble[outsideBelief[i].length];
-            for (int j = 0; j < localBelief[i].length; j++) {
-                localBelief[i][j] = cp.getStateManager().makeStateDouble(beliefRep.one()); // no belief yet; initialized to ONE (certainly true) in order to retrieve the first var-to-constraint msg correctly
-                prevOutsideBelief[i][j] = cp.getStateManager().makeStateDouble(beliefRep.one()); // arbitrary
-            }
+            prevOutsideBelief[i] = new double[outsideBelief[i].length];
+            java.util.Arrays.fill(prevOutsideBelief[i], beliefRep.one()); // arbitrary
             maxDomainSize = Math.max(maxDomainSize, vars[i].max() - vars[i].min() + 1);
         }
         domainValues = new int[maxDomainSize];
@@ -210,7 +222,7 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     protected double localBelief(int i, int val) {
-        return localBelief[i][val - ofs[i]].value();
+        return localBelief[i].read()[val - ofs[i]];
     }
 
     protected double setLocalBelief(int i, int val, double b) {
@@ -226,7 +238,8 @@ public abstract class AbstractConstraint implements Constraint {
             minicpbp.util.BeliefClampStats.recordClamp(beliefRep.rep2std(b));
             b = beliefRep.zero();
         }
-        return localBelief[i][val - ofs[i]].setValue(b);
+        localBelief[i].update()[val - ofs[i]] = b;
+        return b;
     }
 
     protected double outsideBelief(int i, int val) {
@@ -239,11 +252,12 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     protected double prevOutsideBelief(int i, int val) {
-        return prevOutsideBelief[i][val - ofs[i]].value();
+        return prevOutsideBelief[i][val - ofs[i]];
     }
 
     protected double setPrevOutsideBelief(int i, int val, double b) {
-        return prevOutsideBelief[i][val - ofs[i]].setValue(b);
+        prevOutsideBelief[i][val - ofs[i]] = b;
+        return b;
     }
 
     interface getBelief {
@@ -281,24 +295,25 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     private void normalizeLocalCached(int i, int s) {
-        StateDouble[] lb = localBelief[i];
         int o = ofs[i];
         if (s == 1) { // variable is bound
-            lb[domainValues[0] - o].setValue(beliefRep.one());
+            localBelief[i].update()[domainValues[0] - o] = beliefRep.one();
             return;
         }
+        double[] lb = localBelief[i].read();
         for (int j = 0; j < s; j++)
-            beliefValues[j] = lb[domainValues[j] - o].value();
+            beliefValues[j] = lb[domainValues[j] - o];
         double normalizingConstant = beliefRep.summation(beliefValues, s);
         if (beliefRep.isZero(normalizingConstant)) // soon-to-be-empty domain
             return;
+        lb = localBelief[i].update();
         for (int j = 0; j < s; j++) {
             double b = beliefRep.divide(beliefValues[j], normalizingConstant);
             if (beliefRep.rep2std(b) < 0) { // as in setLocalBelief
                 minicpbp.util.BeliefClampStats.recordClamp(beliefRep.rep2std(b));
                 b = beliefRep.zero();
             }
-            lb[domainValues[j] - o].setValue(b);
+            lb[domainValues[j] - o] = b;
         }
     }
 
@@ -306,12 +321,12 @@ public abstract class AbstractConstraint implements Constraint {
         double lambda = beliefRep.std2rep(cp.dampingFactor());
         double oneMinusLambda = beliefRep.complement(lambda);
         double[] ob = outsideBelief[i];
-        StateDouble[] pb = prevOutsideBelief[i];
+        double[] pb = prevOutsideBelief[i];
         int o = ofs[i];
         for (int j = 0; j < s; j++) {
             int k = domainValues[j] - o;
             ob[k] = beliefRep.add(beliefRep.multiply(lambda, ob[k]),
-                    beliefRep.multiply(oneMinusLambda, pb[k].value()));
+                    beliefRep.multiply(oneMinusLambda, pb[k]));
         }
         normalizeOutsideCached(i, s);
     }
@@ -777,9 +792,7 @@ public abstract class AbstractConstraint implements Constraint {
             updateBeliefWarningPrinted = true;
         }
         for (int i = 0; i < vars.length; i++) {
-            for (int j = 0; j < localBelief[i].length; j++) {
-                localBelief[i][j].setValue(beliefRep.one()); // will be normalized
-            }
+            java.util.Arrays.fill(localBelief[i].update(), beliefRep.one()); // will be normalized
         }
     }
 

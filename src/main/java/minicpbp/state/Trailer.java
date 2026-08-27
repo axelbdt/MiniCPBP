@@ -136,6 +136,11 @@ public class Trailer implements StateManager {
     }
 
     @Override
+    public StateDoubleArray makeStateDoubleArray(int size, double initValue) {
+        return new TrailDoubleArray(this, size, initValue);
+    }
+
+    @Override
     public StateMap makeStateMap() {
         return new TrailMap(this);
     }

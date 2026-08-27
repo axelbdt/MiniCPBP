@@ -529,7 +529,7 @@ public class MiniCP implements Solver {
      * from uniform. The historical behaviour of a real BP invocation.
      * <p>
      * Note what it costs and what it buys. It discards a consistent trail
-     * snapshot of {marginals, localBelief, prevOutsideBelief} that backtracking
+     * snapshot of {marginals, localBelief} that backtracking
      * restored correctly, so no work can ever be inherited between nodes and
      * the reuse gate is the only saving available. It also makes the invariant
      * {@code b(v) = prod_c local_c(v)} hold trivially — {@code b} constant at

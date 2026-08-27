@@ -104,6 +104,16 @@ public interface StateManager {
     StateDouble makeStateDouble(double initValue);
 
     /**
+     * Creates a Stateful array of doubles (restorable), with one
+     * reversibility action per array per level instead of one per cell.
+     *
+     * @param size      the array length
+     * @param initValue the initial value of every cell
+     * @return a reference to the array.
+     */
+    StateDoubleArray makeStateDoubleArray(int size, double initValue);
+
+    /**
      * Creates a Stateful map (restorable)
      *
      * @return a reference to the map.
