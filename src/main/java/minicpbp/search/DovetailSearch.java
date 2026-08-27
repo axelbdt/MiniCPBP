@@ -111,6 +111,14 @@ public final class DovetailSearch {
         }
     }
 
+    /**
+     * Fraction of the global budget after which the dovetail stops climbing the
+     * Luby ladder and spends everything left on one completing pass. Without
+     * it, a small calibrated unit means the ladder never reaches a pass that
+     * could return UNSAT.
+     */
+    public static final double FINAL_PASS_RESERVE = 0.6;
+
     private DovetailSearch() {
     }
 
@@ -158,10 +166,18 @@ public final class DovetailSearch {
                     cap = 0;                       // the calibration pass is the cheapest one
                 } else {
                     budget = unitMs * mult;
-                    if (budget > remaining) {
-                        // The next Luby rung does not fit. Spend what is left on
-                        // one pass at the top of the ladder: only a completing
-                        // pass can close an UNSAT, and this is the last chance.
+                    // Two ways the ladder ends, and BOTH are needed. The first
+                    // is the obvious one: the next Luby rung does not fit. The
+                    // second is the one a first implementation got wrong — when
+                    // the calibrated unit is small (a cap-0 pass on an easy
+                    // model costs ~100 ms), Luby's budgets stay far below the
+                    // remaining budget for thousands of passes, so the dovetail
+                    // would spend its whole allowance on cheap truncated passes
+                    // and NEVER run a completing one. Only a completing pass can
+                    // close an UNSAT, so the tail of the budget is reserved for
+                    // exactly one, at the top of the ladder.
+                    if (budget > remaining
+                            || spent >= (long) (FINAL_PASS_RESERVE * globalBudgetMs)) {
                         cap = ladder[ladder.length - 1];
                         budget = remaining;
                         last = true;
