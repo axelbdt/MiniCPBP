@@ -340,19 +340,31 @@ public class SumDC extends AbstractConstraint {
         int idx, s, v;
         if (incrementalUpdateBelief) { // incremental version using unBounds[]
             // NOTE: we do not explicitly set the local belief of bound variables: handled by normalizeMarginals()
-            if (nUnBounds.value() == 0)
+            // BP_COST_PROFILE.md Part 4 item 6: this method is 41% inclusive /
+            // 30% self on CarSequencing-75-01, and most of its self time is the
+            // intrinsic DP arithmetic. The bit-exact levers are the ones taken
+            // here: hoist the StateInt read out of every loop bound, hoist the
+            // k-invariant outsideBelief(idx,v) out of the innermost loop, and
+            // hold the DP rows in locals. Reordering the loops to skip zero
+            // states once per k would change the floating-point accumulation
+            // order and is therefore NOT taken. The remaining lever is
+            // structural (recompute the DP incrementally against the one
+            // message that changed - BP_SCHEDULING.md 2.5) and needs its own
+            // protocol.
+            final int nU = nUnBounds.value();
+            if (nU == 0)
                 return;
             // compute the range of feasible states for each layer
             int fwd_hi = offset + sumBounds.value();
             int fwd_lo = fwd_hi;
             int bwd_hi = offset;
             int bwd_lo = bwd_hi;
-            for (int i = 0; i < nUnBounds.value(); i++) {
+            for (int i = 0; i < nU; i++) {
                 idx = unBounds[i];
                 bwd_hi -= x[idx].min();
                 bwd_lo -= x[idx].max();
             }
-            for (int i = 0; i < nUnBounds.value(); i++) {
+            for (int i = 0; i < nU; i++) {
                 minState[i] = Math.max(fwd_lo, bwd_lo);
                 maxState[i] = Math.min(fwd_hi, bwd_hi);
                 idx = unBounds[i];
@@ -361,45 +373,54 @@ public class SumDC extends AbstractConstraint {
                 bwd_hi += x[idx].min();
                 bwd_lo += x[idx].max();
             }
-            minState[nUnBounds.value()] = Math.max(fwd_lo, bwd_lo);
-            maxState[nUnBounds.value()] = Math.min(fwd_hi, bwd_hi);
+            minState[nU] = Math.max(fwd_lo, bwd_lo);
+            maxState[nU] = Math.min(fwd_hi, bwd_hi);
             // Reach forward
             ip[0][minState[0]] = beliefRep.one();
-            for (int i = 0; i < nUnBounds.value() - 1; i++) {
+            for (int i = 0; i < nU - 1; i++) {
                 idx = unBounds[i];
-                Arrays.fill(ip[i + 1], minState[i + 1], maxState[i + 1] + 1, beliefRep.zero());
+                final double[] ipCur = ip[i];
+                final double[] ipNext = ip[i + 1];
+                Arrays.fill(ipNext, minState[i + 1], maxState[i + 1] + 1, beliefRep.zero());
                 s = x[idx].fillArray(domainValues);
                 for (int j = 0; j < s; j++) {
                     v = domainValues[j];
-                    for (int k = Math.max(minState[i], minState[i + 1] - v); k <= Math.min(maxState[i], maxState[i + 1] - v); k++) {
-                        if (!beliefRep.isZero(ip[i][k])) {
+                    final double ob = outsideBelief(idx, v);
+                    final int kHi = Math.min(maxState[i], maxState[i + 1] - v);
+                    for (int k = Math.max(minState[i], minState[i + 1] - v); k <= kHi; k++) {
+                        if (!beliefRep.isZero(ipCur[k])) {
                             // add the combination of ip[i][k] and outsideBelief(idx,v) to ip[i+1][k+v]
-                            ip[i + 1][k + v] = beliefRep.add(ip[i + 1][k + v], beliefRep.multiply(ip[i][k], outsideBelief(idx, v)));
+                            ipNext[k + v] = beliefRep.add(ipNext[k + v], beliefRep.multiply(ipCur[k], ob));
                         }
                     }
                 }
-                rescaleLayer(ip[i + 1], minState[i + 1], maxState[i + 1]);
+                rescaleLayer(ipNext, minState[i + 1], maxState[i + 1]);
             }
             // Reach backward and set local beliefs
-            op[nUnBounds.value() - 1][minState[nUnBounds.value()]] = beliefRep.one();
-            for (int i = nUnBounds.value() - 1; i > 0; i--) {
+            op[nU - 1][minState[nU]] = beliefRep.one();
+            for (int i = nU - 1; i > 0; i--) {
                 idx = unBounds[i];
-                Arrays.fill(op[i - 1], minState[i], maxState[i] + 1, beliefRep.zero());
+                final double[] ipCur = ip[i];
+                final double[] opCur = op[i];
+                final double[] opPrev = op[i - 1];
+                Arrays.fill(opPrev, minState[i], maxState[i] + 1, beliefRep.zero());
                 s = x[idx].fillArray(domainValues);
                 for (int j = 0; j < s; j++) {
                     v = domainValues[j];
+                    final double ob = outsideBelief(idx, v);
                     double belief = beliefRep.zero();
-                    for (int k = Math.max(minState[i + 1], minState[i] + v); k <= Math.min(maxState[i + 1], maxState[i] + v); k++) {
-                        if (!beliefRep.isZero(op[i][k])) {
+                    final int kHi = Math.min(maxState[i + 1], maxState[i] + v);
+                    for (int k = Math.max(minState[i + 1], minState[i] + v); k <= kHi; k++) {
+                        if (!beliefRep.isZero(opCur[k])) {
                             // add the combination of op[i][k] and outsideBelief(idx,v) to op[i-1][k-v]
-                            op[i - 1][k - v] = beliefRep.add(op[i - 1][k - v], beliefRep.multiply(op[i][k], outsideBelief(idx, v)));
+                            opPrev[k - v] = beliefRep.add(opPrev[k - v], beliefRep.multiply(opCur[k], ob));
                             // add the combination of ip[i][k-v] and op[i][k] to belief
-                            belief = beliefRep.add(belief, beliefRep.multiply(ip[i][k - v], op[i][k]));
+                            belief = beliefRep.add(belief, beliefRep.multiply(ipCur[k - v], opCur[k]));
                         }
                     }
                     setLocalBelief(idx, v, belief);
                 }
-                rescaleLayer(op[i - 1], minState[i], maxState[i]);
+                rescaleLayer(opPrev, minState[i], maxState[i]);
             }
             idx = unBounds[0];
             s = x[idx].fillArray(domainValues);
@@ -414,17 +435,21 @@ public class SumDC extends AbstractConstraint {
             // Reach forward
             ip[0][offset] = beliefRep.one();
             for (int i = 0; i < n - 1; i++) {
+                final double[] ipCur = ip[i];
+                final double[] ipNext = ip[i + 1];
                 s = x[i].fillArray(domainValues);
                 for (int j = 0; j < s; j++) {
                     v = domainValues[j];
-                    for (int k = mini - (v < 0 ? v : 0); k <= maxi - (v > 0 ? v : 0); k++) {
-                        if (!beliefRep.isZero(ip[i][k + offset])) {
+                    final double ob = outsideBelief(i, v);
+                    final int kHi = maxi - (v > 0 ? v : 0);
+                    for (int k = mini - (v < 0 ? v : 0); k <= kHi; k++) {
+                        if (!beliefRep.isZero(ipCur[k + offset])) {
                             // add the combination of ip[i][k+offset] and outsideBelief(i,v) to ip[i+1][k+offset+v]
-                            ip[i + 1][k + offset + v] = beliefRep.add(ip[i + 1][k + offset + v], beliefRep.multiply(ip[i][k + offset], outsideBelief(i, v)));
+                            ipNext[k + offset + v] = beliefRep.add(ipNext[k + offset + v], beliefRep.multiply(ipCur[k + offset], ob));
                         }
                     }
                 }
-                rescaleLayer(ip[i + 1], 0, ip[i + 1].length - 1);
+                rescaleLayer(ipNext, 0, ipNext.length - 1);
             }
 
             for (int i = 0; i < n; i++) {
@@ -433,21 +458,26 @@ public class SumDC extends AbstractConstraint {
             // Reach backward and set local beliefs
             op[n - 1][offset] = beliefRep.one();
             for (int i = n - 1; i > 0; i--) {
+                final double[] ipCur = ip[i];
+                final double[] opCur = op[i];
+                final double[] opPrev = op[i - 1];
                 s = x[i].fillArray(domainValues);
                 for (int j = 0; j < s; j++) {
                     v = domainValues[j];
+                    final double ob = outsideBelief(i, v);
                     double belief = beliefRep.zero();
-                    for (int k = mini - (v < 0 ? v : 0); k <= maxi - (v > 0 ? v : 0); k++) {
-                        if (!beliefRep.isZero(op[i][k + offset + v])) {
+                    final int kHi = maxi - (v > 0 ? v : 0);
+                    for (int k = mini - (v < 0 ? v : 0); k <= kHi; k++) {
+                        if (!beliefRep.isZero(opCur[k + offset + v])) {
                             // add the combination of op[i][k+offset+v] and outsideBelief(i,v) to op[i-1][k+offset]
-                            op[i - 1][k + offset] = beliefRep.add(op[i - 1][k + offset], beliefRep.multiply(op[i][k + offset + v], outsideBelief(i, v)));
+                            opPrev[k + offset] = beliefRep.add(opPrev[k + offset], beliefRep.multiply(opCur[k + offset + v], ob));
                             // add the combination of ip[i][k+offset] and op[i][k+offset+V] to belief
-                            belief = beliefRep.add(belief, beliefRep.multiply(ip[i][k + offset], op[i][k + offset + v]));
+                            belief = beliefRep.add(belief, beliefRep.multiply(ipCur[k + offset], opCur[k + offset + v]));
                         }
                     }
                     setLocalBelief(i, v, belief);
                 }
-                rescaleLayer(op[i - 1], 0, op[i - 1].length - 1);
+                rescaleLayer(opPrev, 0, opPrev.length - 1);
             }
             s = x[0].fillArray(domainValues);
             for (int j = 0; j < s; j++) {
