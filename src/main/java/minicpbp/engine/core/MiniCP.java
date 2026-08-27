@@ -474,6 +474,10 @@ public class MiniCP implements Solver {
             final minicpbp.util.BPConfig.StopRule rule = minicpbp.util.BPConfig.STOP_RULE;
             sched.run(beliefPropaMaxIter, iter -> {
                 Log.bpIteration(iter, variables);
+                // Probe H (BP_PROBE_PROTOCOL.md amendment 4): per-sweep
+                // decision trace; static final gate, dead code when off
+                if (minicpbp.util.SweepTrace.ENABLED)
+                    minicpbp.util.SweepTrace.record(this, iter);
                 double previousEntropy = entropy[0];
                 double currentEntropy = problemEntropy();
                 entropy[0] = currentEntropy;
