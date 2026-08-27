@@ -2321,6 +2321,16 @@ public class XCSP implements XCallbacks2 {
 		case MNE:
 			search = makeSearch(minEntropy(vars));
 			break;
+		case MNERTB:
+			// probe N (BP_PROBE_PROTOCOL amendments 10/10a): min entropy with a
+			// uniform random tie-break among variables whose entropy agrees to
+			// 2 decimals. Seed it with -Dminicpbp.seed; absent that property the
+			// solver RNG is new Random() and the run is unreproducible.
+			// NOTE: minEntropyRandomTieBreak does not call setBranchingOrder, so
+			// stopRule=decision would sample the deterministic heuristic's
+			// decision. Ship-stop arms only until that is fixed.
+			search = makeSearch(minEntropyRandomTieBreak(vars));
+			break;
 		case IE:
 			search = makeSearch(impactEntropy(vars));
 			if(XCSP.initImpact)
