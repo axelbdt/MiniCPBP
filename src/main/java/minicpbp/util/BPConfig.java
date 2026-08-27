@@ -141,6 +141,17 @@ public final class BPConfig {
     public static final double UPDATE_THRESHOLD;
     /** RNG seed, or null when unseeded (the previous default) */
     public static final Long SEED;
+    /**
+     * Probe K (BP_PROBE_PROTOCOL.md amendment 7): decision-keyed cross-node
+     * trigger. {@code -Dminicpbp.bp.trigger=decision} replaces the 5 %
+     * domain-shrink gate with: run BP iff some ACTIVE constraint's scope
+     * contains both the tentative decision variable (argmin entropy over the
+     * inherited, renormalized marginals) and a variable touched since the
+     * last invocation on this path. Uses the {@code bpTouchStamp} machinery,
+     * which therefore stamps under this flag as well as under
+     * {@code incrementalDirty}. Default false: behaviour unchanged.
+     */
+    public static final boolean DECISION_TRIGGER;
 
     static {
         SCHEDULE = Schedule.valueOf(System.getProperty("minicpbp.bp.schedule", "flood").toUpperCase());
@@ -156,6 +167,10 @@ public final class BPConfig {
         SEED = (s == null || s.isEmpty()) ? null : Long.valueOf(Long.parseLong(s));
         STATS_FILE = System.getProperty("minicpbp.bp.stats", "");
         DUMP_GRAPH = Boolean.parseBoolean(System.getProperty("minicpbp.bp.dumpGraph", "false"));
+        String trig = System.getProperty("minicpbp.bp.trigger", "ship");
+        if (!trig.equals("ship") && !trig.equals("decision"))
+            throw new IllegalStateException("c minicpbp.bp.trigger must be ship or decision, not " + trig);
+        DECISION_TRIGGER = trig.equals("decision");
 
         // F6: resolve the precedence explicitly. The three legacy flags used to
         // be silently ordered by where their tests sat in the loop body, and
@@ -206,6 +221,7 @@ public final class BPConfig {
     public static String describe() {
         return "schedule=" + SCHEDULE + " warmStart=" + WARM_START
                 + " incrementalDirty=" + INCREMENTAL_DIRTY
+                + " trigger=" + (DECISION_TRIGGER ? "decision" : "ship")
                 + " stopRule=" + STOP_RULE
                 + " convergeTol=" + CONVERGE_TOL
                 + " stableDecisionSweeps=" + STABLE_DECISION_SWEEPS

@@ -82,7 +82,8 @@ public class IntVarImpl implements IntVar {
             // support-propagation arms -- which are the BASELINE the belief arms
             // are measured against. An overhead that only the baseline pays is
             // not an overhead, it is a biased measurement.
-            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY) bpTouchStamp.setValue(cp.bpEpoch());
+            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY
+                    || minicpbp.util.BPConfig.DECISION_TRIGGER) bpTouchStamp.setValue(cp.bpEpoch());
             scheduleAll(onDomain);
         }
 

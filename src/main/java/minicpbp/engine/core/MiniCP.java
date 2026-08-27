@@ -415,7 +415,17 @@ public class MiniCP implements Solver {
         }
         potentialTrigger++;
         minicpbp.util.BPStats.calls++;
-        if (!ALWAYS_RUN_BP && sum >= (1.0 - beliefUpdateThreshold) * sumDomainSizes.value()) { // trigger BP only if domains sufficiently changed
+        // Probe K (BP_PROBE_PROTOCOL.md amendment 7): the decision-keyed
+        // trigger replaces the 5 % gate below. Static final, folded when off.
+        if (!ALWAYS_RUN_BP && minicpbp.util.BPConfig.DECISION_TRIGGER) {
+            if (decisionTriggerSkip())
+                return; // marginals already renormalized inside the test
+            trigger++;
+            minicpbp.util.BPStats.invocations++;
+            sumDomainSizes.setValue(sum);
+            bpEpoch++;
+        }
+        else if (!ALWAYS_RUN_BP && sum >= (1.0 - beliefUpdateThreshold) * sumDomainSizes.value()) { // trigger BP only if domains sufficiently changed
             // 2026-08-19 (TODO.md item 3 diagnosis): renormalizing on the
             // reuse path is not idempotent in floating point (v / sum(v)
             // drifts by ulps when sum is ~1 but not exactly 1). Repeated
@@ -460,7 +470,8 @@ public class MiniCP implements Solver {
             // this path, so the update below happens after beginInvocation
             sched.beginInvocation(fullDirty);
             // trailed write, so also guarded: nothing reads it otherwise
-            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY) bpPathEpoch.setValue(bpEpoch);
+            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY
+                    || minicpbp.util.BPConfig.DECISION_TRIGGER) bpPathEpoch.setValue(bpEpoch);
             if (minicpbp.util.BPConfig.DUMP_GRAPH && !graphDumped && bpGraph != null) {
                 graphDumped = true;
                 // stderr: harnesses redirect stdout while solving
@@ -893,6 +904,67 @@ public class MiniCP implements Solver {
             }
         }
         return (nbUnboundBranchingVar == 0 ? 0.0 : sumNormalizedEntropy / nbUnboundBranchingVar);
+    }
+
+    /**
+     * Probe K: the decision-keyed cross-node trigger
+     * (BP_PROBE_PROTOCOL.md amendment 7). Returns true when this BP call may
+     * SKIP: no ACTIVE constraint's scope contains both the tentative decision
+     * variable and a variable touched since the last invocation on this path.
+     * <p>
+     * The tentative decision variable is the argmin-entropy unbound branching
+     * variable computed from the inherited marginals after renormalizing them
+     * over the current domains — the same repair the shipped skip path
+     * performs, and the same scan as {@link #decisionSettled()} (F7 ordering).
+     * One-hop locality is a heuristic: changes that cannot reach the decision
+     * variable through any single factor are assumed unable to flip it. The
+     * first invocation on a path (pathEpoch 0) always runs.
+     */
+    private boolean decisionTriggerSkip() {
+        int pathEpoch = bpPathEpoch.value();
+        if (pathEpoch <= 0) return false; // nothing computed yet on this path
+        // the shipped skip path's repair, needed before reading entropies
+        Iterator<IntVar> it = variables.iterator();
+        while (it.hasNext()) it.next().normalizeMarginals();
+        IntVar best = null;
+        double bestEntropy = Double.MAX_VALUE;
+        if (branchingOrder != null) {
+            for (IntVar v : branchingOrder) {
+                if (v.size() <= 1) continue;
+                double h = v.entropy();
+                if (h < bestEntropy) {
+                    bestEntropy = h;
+                    best = v;
+                }
+            }
+        } else {
+            Iterator<IntVar> it2 = variables.iterator();
+            while (it2.hasNext()) {
+                IntVar v = it2.next();
+                if (v.isBound() || !v.isForBranching()) continue;
+                double h = v.entropy();
+                if (h < bestEntropy) {
+                    bestEntropy = h;
+                    best = v;
+                }
+            }
+        }
+        if (best == null) return true; // nothing left to decide
+        IntVar dec = best.getBaseVar();
+        Iterator<Constraint> ic = constraints.iterator();
+        while (ic.hasNext()) {
+            Constraint c = ic.next();
+            if (!c.isActive()) continue;
+            IntVar[] scope = c.getScope();
+            boolean hasDec = false, hasTouched = false;
+            for (int i = 0; i < scope.length; i++) {
+                IntVar b = scope[i].getBaseVar();
+                if (b == dec) hasDec = true;
+                if (b.bpTouchStamp() >= pathEpoch) hasTouched = true;
+                if (hasDec && hasTouched) return false; // coupled: run BP
+            }
+        }
+        return true; // no active factor couples a change to the decision
     }
 
     /* decision-directed stopping (BP_SCHEDULING.md 1.4) */

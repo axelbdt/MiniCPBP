@@ -187,7 +187,8 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     public void setActive(boolean active) {
-        if (!active && this.active.value() && minicpbp.util.BPConfig.INCREMENTAL_DIRTY) {
+        if (!active && this.active.value()
+                && (minicpbp.util.BPConfig.INCREMENTAL_DIRTY || minicpbp.util.BPConfig.DECISION_TRIGGER)) {
             // A deactivated factor is divided out of every neighbour's marginal
             // by the warm-entry rebuild, so every scope variable's cavity for
             // every OTHER incident factor changes. Entailment is detected inside

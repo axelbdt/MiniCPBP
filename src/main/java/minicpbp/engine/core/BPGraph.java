@@ -593,7 +593,8 @@ final class BPGraph implements MarginalResync {
             // factor of this graph — but if it is reached, the invariant is
             // broken with nothing recording it, and incremental seeding would
             // skip the factors that read this variable. Record it as changed.
-            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY) base.bpTouch();
+            if (minicpbp.util.BPConfig.INCREMENTAL_DIRTY
+                    || minicpbp.util.BPConfig.DECISION_TRIGGER) base.bpTouch();
             base.normalizeMarginals();
             return;
         }

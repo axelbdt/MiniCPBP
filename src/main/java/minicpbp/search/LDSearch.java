@@ -102,10 +102,29 @@ public class LDSearch extends Search{
 	this.discrepancyUB = discrepancyUB;
     }
 	
+    // Probe L (BP_PROBE_PROTOCOL.md amendment 8): run exactly ONE pass at this
+    // discrepancy cap and claim completion (=> UNSAT upstream) only when the
+    // pass ends with zero truncations — a pass that never truncated explored
+    // the whole tree, so the claim is sound; a truncated pass without a
+    // solution makes no completeness claim and reports as TIMEOUT upstream.
+    // Default -1 = off, behaviour unchanged. Read once: one JVM = one pass cap.
+    private static final int SINGLE_PASS =
+            Integer.getInteger("minicpbp.lds.singlePass", -1);
+
     private SearchStatistics solve(SearchStatistics statistics, Predicate<SearchStatistics> limit) {
         sm.withNewState(() -> {
 	    int maxDiscrepancy = 1;
             try {
+		if (SINGLE_PASS >= 0) {
+		    int cap = Math.min(SINGLE_PASS, discrepancyUB);
+		    LDSbranching = new LimitedDiscrepancyBranching(branching, cap);
+		    ldsPass(cap, statistics, limit);
+		    // the unconditional setCompleted() below is for the full
+		    // ladder; a single pass claims completion only untruncated
+		    if (LDSbranching.truncations() == 0)
+			statistics.setCompleted();
+		    return;
+		}
 		if (discrepancyUB==0) { // special case of all vars already being fixed
 		    LDSbranching = new LimitedDiscrepancyBranching(branching, 0);
 		    ldsPass(0, statistics, limit);
