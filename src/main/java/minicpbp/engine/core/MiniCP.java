@@ -222,6 +222,27 @@ public class MiniCP implements Solver {
     @Override
     public Random getRandomNbGenerator() { return rand; }
 
+    /**
+     * Amendment 10b: reseed the solver RNG between dovetail passes, so that
+     * one JVM can run the seed ladder a randomized heuristic needs. A
+     * branching heuristic that captured {@code rand} at construction keeps the
+     * SAME generator object, so it sees the new seed — but a heuristic that
+     * cached derived state would not, which is why DovetailSearch rebuilds the
+     * branching from a factory on every pass.
+     */
+    public void reseed(long seed) {
+        rand.setSeed(seed);
+    }
+
+    /**
+     * Amendment 10b: drop the cached BP schedule so the next invocation
+     * rebuilds it from the current {@code BPConfig.SCHEDULE}. Only needed when
+     * a pass changes the schedule.
+     */
+    public void resetScheduler() {
+        scheduler = null;
+    }
+
     @Override
     public Belief getBeliefRep() {
         return beliefRep;

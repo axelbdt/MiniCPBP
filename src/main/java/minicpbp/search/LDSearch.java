@@ -108,15 +108,30 @@ public class LDSearch extends Search{
     // the whole tree, so the claim is sound; a truncated pass without a
     // solution makes no completeness claim and reports as TIMEOUT upstream.
     // Default -1 = off, behaviour unchanged. Read once: one JVM = one pass cap.
-    private static final int SINGLE_PASS =
+    private static final int SINGLE_PASS_PROPERTY =
             Integer.getInteger("minicpbp.lds.singlePass", -1);
+
+    // Amendment 10b: the cap is per SEARCH, not per JVM. The property still
+    // supplies the default, so a run that does not touch the setter behaves
+    // exactly as before.
+    private int singlePassCap = SINGLE_PASS_PROPERTY;
+
+    /** run exactly one pass at this discrepancy cap; -1 restores the full ladder */
+    public void setSinglePassCap(int cap) {
+        this.singlePassCap = cap;
+    }
+
+    /** number of truncated nodes in the last pass, 0 iff the pass was complete */
+    public int lastPassTruncations() {
+        return LDSbranching == null ? -1 : LDSbranching.truncations();
+    }
 
     private SearchStatistics solve(SearchStatistics statistics, Predicate<SearchStatistics> limit) {
         sm.withNewState(() -> {
 	    int maxDiscrepancy = 1;
             try {
-		if (SINGLE_PASS >= 0) {
-		    int cap = Math.min(SINGLE_PASS, discrepancyUB);
+		if (singlePassCap >= 0) {
+		    int cap = Math.min(singlePassCap, discrepancyUB);
 		    LDSbranching = new LimitedDiscrepancyBranching(branching, cap);
 		    ldsPass(cap, statistics, limit);
 		    // the unconditional setCompleted() below is for the full

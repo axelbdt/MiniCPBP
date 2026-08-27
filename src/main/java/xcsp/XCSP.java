@@ -21,6 +21,7 @@ import minicpbp.engine.core.IntVar;
 import minicpbp.engine.core.IntVarViewOffset;
 import minicpbp.engine.core.Solver;
 import minicpbp.engine.core.Solver.PropaMode;
+import minicpbp.search.DovetailSearch;
 import minicpbp.search.LDSearch;
 import minicpbp.search.Search;
 import minicpbp.search.SearchStatistics;
@@ -2444,6 +2445,72 @@ public class XCSP implements XCallbacks2 {
 			}
 		}
 
+	}
+
+	/**
+	 * Amendment 10b (probe N phase 2): run an in-process dovetail over LDS
+	 * passes on the parsed model, instead of one JVM per pass. The model is
+	 * parsed and built once; {@link DovetailSearch} owns the pass schedule, the
+	 * per-pass configuration and the completion rule.
+	 *
+	 * Only the two min-entropy heuristics are accepted: the arms of this
+	 * experiment differ in BP configuration and in RNG seed, not in heuristic
+	 * family, and the heuristics that also flip the propagation mode (FFRV,
+	 * IBS, WDEG) have no meaning inside a BP dovetail.
+	 */
+	public DovetailSearch.Result solveDovetail(BranchingHeuristic heuristic,
+											  java.util.List<DovetailSearch.Arm> arms,
+											  int[] ladder, long globalBudgetMs,
+											  long calibBudgetMs, int maxPasses,
+											  String solFileStr) {
+		if (heuristic != BranchingHeuristic.MNE && heuristic != BranchingHeuristic.MNERTB)
+			throw new IllegalArgumentException("c solveDovetail supports min-entropy and "
+					+ "min-entropy-rtb only, not " + heuristic);
+		if (hasFailed) {
+			DovetailSearch.Result r = new DovetailSearch.Result();
+			r.status = "UNSAT";
+			r.decidingLabel = "root";
+			return r;
+		}
+		minicp.setTraceBPFlag(traceBP);
+		minicp.setTraceSearchFlag(traceSearch);
+		minicp.setTraceEntropyFlag(traceEntropy);
+
+		IntVar[] vars = mapVar.entrySet().stream().sorted(new EntryComparator())
+				.map(Map.Entry::getValue).toArray(IntVar[]::new);
+		if (vars.length == 0) {
+			DovetailSearch.Result r = new DovetailSearch.Result();
+			r.status = "UNSUPPORTED";
+			return r;
+		}
+		extractSolutionStr = true;
+
+		// A fresh search AND a fresh branching per pass: minEntropyRandomTieBreak
+		// captures the RNG and the branching flags at construction, so a reseed
+		// between passes is only visible to a heuristic built after it.
+		java.util.function.Supplier<LDSearch> factory = () -> {
+			Supplier<Procedure[]> branching = (heuristic == BranchingHeuristic.MNERTB)
+					? minEntropyRandomTieBreak(vars) : minEntropy(vars);
+			LDSearch s = makeLds(minicp, branching);
+			s.onSolution(() -> {
+				foundSolution = true;
+				StringBuilder sol = new StringBuilder("<instantiation>\n\t<list>\n\t\t");
+				for (XVarInteger x : xVars)
+					sol.append(x.id()).append(" ");
+				sol.append("\n\t</list>\n\t<values>\n\t\t");
+				for (IntVar x : minicpVars)
+					sol.append(x.min()).append(" ");
+				sol.append("\n\t</values>\n</instantiation>");
+				solutionStr = sol.toString();
+			});
+			return s;
+		};
+
+		DovetailSearch.Result r = DovetailSearch.run(minicp, factory,
+				() -> foundSolution, arms, ladder, globalBudgetMs, calibBudgetMs, maxPasses);
+		if (foundSolution && solFileStr != null && !solFileStr.isEmpty())
+			printSolution(solFileStr);
+		return r;
 	}
 
 	private void verifySolution() {

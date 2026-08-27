@@ -116,7 +116,14 @@ public final class BPConfig {
      */
     public enum StopRule {SHIPPED, FIXED, CONVERGE, DECISION}
 
-    public static final Schedule SCHEDULE;
+    /**
+     * The BP schedule in force. NOT final since amendment 10b: an in-process
+     * dovetail (minicpbp.search.DovetailSearch) runs passes with different
+     * configurations in one JVM, which a compile-time constant forbids.
+     * Written only by {@link #applyPass}; the static initializer below still
+     * reads the same property with the same default.
+     */
+    public static Schedule SCHEDULE;
     /** not final: exp.SchedBench flips it to measure how far from a fixed point
      *  a schedule stopped, by continuing from the marginals it produced */
     public static boolean WARM_START;
@@ -132,11 +139,12 @@ public final class BPConfig {
     public static final boolean NO_EARLY_STOP;
     /** stop once the branching decision has been the same for this many
      *  consecutive sweeps; 0 disables it (BP_SCHEDULING.md section 1.4) */
-    public static final int STABLE_DECISION_SWEEPS;
+    /** not final since amendment 10b (per-pass dovetail configuration) */
+    public static int STABLE_DECISION_SWEEPS;
     /** stop once no branchable marginal moves by more than this; 0 disables it */
     public static final double CONVERGE_TOL;
-    /** the one stopping rule in force */
-    public static final StopRule STOP_RULE;
+    /** the one stopping rule in force; not final since amendment 10b */
+    public static StopRule STOP_RULE;
     /** relative domain-size decrease below which BP is skipped */
     public static final double UPDATE_THRESHOLD;
     /** RNG seed, or null when unseeded (the previous default) */
@@ -206,6 +214,63 @@ public final class BPConfig {
     }
 
     private BPConfig() {
+    }
+
+    /**
+     * The dials one dovetail pass may set (amendment 10b). Everything not
+     * named here is a property of the run, not of the pass, and stays as the
+     * JVM configured it. The sweep cap lives on the solver
+     * ({@code Solver.setMaxIter}) and the discrepancy cap on the search
+     * ({@code LDSearch.setSinglePassCap}), so they are not fields here.
+     */
+    public static final class Pass {
+        public final Schedule schedule;
+        public final boolean warmStart;
+        public final StopRule stopRule;
+        public final int stableDecisionSweeps;
+
+        public Pass(Schedule schedule, boolean warmStart, StopRule stopRule,
+                    int stableDecisionSweeps) {
+            this.schedule = schedule;
+            this.warmStart = warmStart;
+            this.stopRule = stopRule;
+            this.stableDecisionSweeps = stableDecisionSweeps;
+        }
+
+        @Override public String toString() {
+            return schedule + "/" + (warmStart ? "warm" : "cold") + "/" + stopRule
+                    + (stopRule == StopRule.DECISION ? "" + stableDecisionSweeps : "");
+        }
+    }
+
+    /**
+     * Install a pass configuration. The SAME consistency checks the static
+     * initializer runs are re-run here: a dovetail must not be able to reach a
+     * configuration a JVM could not have been started in.
+     *
+     * @return true when the schedule changed, i.e. the caller must drop the
+     *         solver's cached scheduler ({@code MiniCP.resetScheduler}).
+     */
+    public static boolean applyPass(Pass p) {
+        if (p.stopRule == StopRule.DECISION && p.stableDecisionSweeps <= 0)
+            throw new IllegalStateException("c stopRule=decision needs stableDecisionSweeps > 0");
+        if (p.stopRule == StopRule.CONVERGE && !(CONVERGE_TOL > 0))
+            throw new IllegalStateException("c stopRule=converge needs -Dminicpbp.bp.convergeTol > 0");
+        if (INCREMENTAL_DIRTY && !p.warmStart)
+            throw new IllegalStateException("c incrementalDirty requires warmStart");
+        if (INCREMENTAL_DIRTY && p.schedule != Schedule.TOPO && p.schedule != Schedule.RESIDUAL)
+            throw new IllegalStateException("c incrementalDirty is only implemented for topo and residual");
+        boolean scheduleChanged = SCHEDULE != p.schedule;
+        SCHEDULE = p.schedule;
+        WARM_START = p.warmStart;
+        STOP_RULE = p.stopRule;
+        STABLE_DECISION_SWEEPS = p.stableDecisionSweeps;
+        return scheduleChanged;
+    }
+
+    /** the current dials, so a pass can be restored or logged */
+    public static Pass currentPass() {
+        return new Pass(SCHEDULE, WARM_START, STOP_RULE, STABLE_DECISION_SWEEPS);
     }
 
     /** true when the schedule needs the in-place (Gauss-Seidel) factor update */
