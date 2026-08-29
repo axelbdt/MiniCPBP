@@ -78,6 +78,29 @@ public interface Constraint {
     String getName();
     void setName(String name);
 
+    /**
+     * Diverts this constraint's scheduling away from the solver's global
+     * propagation queue: when set, {@link Solver#schedule(Constraint)} hands
+     * the constraint to the given consumer instead of enqueueing it. Used by
+     * encapsulating constraints (e.g.
+     * {@link minicpbp.engine.constraints.Intension}) whose internal
+     * constraints must reach a local fixpoint inside the owner's
+     * {@code propagate()} rather than appear in the outer network.
+     *
+     * @param s the local scheduler, or null to restore global scheduling
+     */
+    default void setLocalScheduler(java.util.function.Consumer<Constraint> s) {
+        throw new minicpbp.util.exception.NotImplementedException("setLocalScheduler");
+    }
+
+    /**
+     * @return the local scheduler set by {@link #setLocalScheduler}, or null
+     * if this constraint is scheduled in the solver's global queue
+     */
+    default java.util.function.Consumer<Constraint> localScheduler() {
+        return null;
+    }
+
     /************* BP services *************/
 
     /**

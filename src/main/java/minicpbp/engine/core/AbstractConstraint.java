@@ -84,6 +84,11 @@ public abstract class AbstractConstraint implements Constraint {
 
     private int failureCount;
 
+    // when non-null, Solver.schedule() hands this constraint to the consumer
+    // instead of the global propagation queue (hidden constraints owned by an
+    // encapsulating constraint such as Intension)
+    private java.util.function.Consumer<Constraint> localScheduler = null;
+
     // delta-sparsity probe (BP_PROBE_PROTOCOL.md Probe A): shadow of the
     // previous update's input, lazily allocated, only when the probe is on
     private double[][] probePrevOB;
@@ -177,6 +182,16 @@ public abstract class AbstractConstraint implements Constraint {
     }
 
     public void propagate() {}
+
+    @Override
+    public void setLocalScheduler(java.util.function.Consumer<Constraint> s) {
+        localScheduler = s;
+    }
+
+    @Override
+    public java.util.function.Consumer<Constraint> localScheduler() {
+        return localScheduler;
+    }
 
     public void setScheduled(boolean scheduled) {
         this.scheduled = scheduled;

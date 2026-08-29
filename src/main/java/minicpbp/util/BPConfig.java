@@ -161,6 +161,17 @@ public final class BPConfig {
      */
     public static final boolean DECISION_TRIGGER;
 
+    /**
+     * XCSP intension expressions: when true (default), a general intension
+     * constraint is posted as one encapsulated
+     * {@link minicpbp.engine.constraints.Intension} factor whose reified
+     * decomposition is internal (filtered by a local fixpoint, messaged by
+     * nested BP); when false, the decomposition is posted flat into the outer
+     * solver (auxiliary variables and primitive constraints visible in the
+     * outer network), as the tree-argument callbacks do.
+     */
+    public static final boolean INTENSION_ENCAPSULATED;
+
     /** which variable-selection heuristic {@code decisionSettled()} replicates */
     public enum DecisionRule {ENTROPY, WDEG}
 
@@ -202,6 +213,7 @@ public final class BPConfig {
         SEED = (s == null || s.isEmpty()) ? null : Long.valueOf(Long.parseLong(s));
         STATS_FILE = System.getProperty("minicpbp.bp.stats", "");
         DUMP_GRAPH = Boolean.parseBoolean(System.getProperty("minicpbp.bp.dumpGraph", "false"));
+        INTENSION_ENCAPSULATED = Boolean.parseBoolean(System.getProperty("minicpbp.intension.encapsulated", "true"));
         String trig = System.getProperty("minicpbp.bp.trigger", "ship");
         if (!trig.equals("ship") && !trig.equals("decision"))
             throw new IllegalStateException("c minicpbp.bp.trigger must be ship or decision, not " + trig);

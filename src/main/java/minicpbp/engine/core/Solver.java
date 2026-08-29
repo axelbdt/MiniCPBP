@@ -107,6 +107,30 @@ public interface Solver {
     void setMaxIter(int maxIter);
 
     /**
+     * @return the maximal number of BP iterations before each branching
+     */
+    int getMaxIter();
+
+    /**
+     * Enters hidden-capture mode: until {@link #endHiddenCapture()}, newly
+     * registered variables and posted constraints are diverted into a
+     * {@link HiddenGraph} instead of the solver's variable/constraint lists,
+     * and constraint scheduling is diverted into the graph's pending list.
+     * Used by encapsulating constraints (e.g.
+     * {@link minicpbp.engine.constraints.Intension}) to build an internal
+     * factor graph that shares the solver's reversible state but does not
+     * appear in the outer constraint network.
+     */
+    void beginHiddenCapture();
+
+    /**
+     * Leaves hidden-capture mode.
+     *
+     * @return the captured hidden subgraph
+     */
+    HiddenGraph endHiddenCapture();
+
+    /**
      * @return whether message damping is applied
      */
     boolean dampingMessages();

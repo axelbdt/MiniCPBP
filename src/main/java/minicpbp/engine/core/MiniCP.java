@@ -248,9 +248,32 @@ public class MiniCP implements Solver {
         return beliefRep;
     }
 
+    // hidden-capture mode (see Solver.beginHiddenCapture): non-null while an
+    // encapsulating constraint builds its internal factor graph
+    private HiddenGraph capture = null;
+
+    @Override
+    public void beginHiddenCapture() {
+        if (capture != null)
+            throw new IllegalStateException("nested hidden capture");
+        capture = new HiddenGraph();
+    }
+
+    @Override
+    public HiddenGraph endHiddenCapture() {
+        if (capture == null)
+            throw new IllegalStateException("endHiddenCapture without beginHiddenCapture");
+        HiddenGraph g = capture;
+        capture = null;
+        return g;
+    }
+
     @Override
     public void registerVar(IntVar x) {
-        variables.push(x);
+        if (capture != null)
+            capture.addVariable(x);
+        else
+            variables.push(x);
     }
 
     public void setMode(PropaMode mode) {
@@ -279,6 +302,11 @@ public class MiniCP implements Solver {
 
     public void setMaxIter(int maxIter) {
         MiniCP.beliefPropaMaxIter = maxIter;
+    }
+
+    @Override
+    public int getMaxIter() {
+        return beliefPropaMaxIter;
     }
 
     public boolean dampingMessages() {
@@ -312,7 +340,18 @@ public class MiniCP implements Solver {
     public void schedule(Constraint c) {
         if (c.isActive() && !c.isScheduled()) {
             c.setScheduled(true);
-            propagationQueue.add(c);
+            if (capture != null) {
+                // during hidden capture, any scheduling comes from posting the
+                // internal graph (fresh hidden variables have no outer
+                // constraints registered); the owner drains this at post()
+                capture.addPending(c);
+                return;
+            }
+            java.util.function.Consumer<Constraint> local = c.localScheduler();
+            if (local != null)
+                local.accept(c);
+            else
+                propagationQueue.add(c);
         }
     }
 
@@ -369,6 +408,20 @@ public class MiniCP implements Solver {
 
     @Override
     public void fixPoint() {
+        // the global queue holds outer constraints only; if a hidden capture
+        // is active (a Factory helper posting with enforceFixpoint during an
+        // Intension build), suspend it so outer propagation — including any
+        // constraint an outer propagator posts dynamically — stays outer
+        HiddenGraph stash = capture;
+        capture = null;
+        try {
+            fixPointImpl();
+        } finally {
+            capture = stash;
+        }
+    }
+
+    private void fixPointImpl() {
         notifyFixPoint();
         try {
             while(!propagationQueue.isEmpty()) {
@@ -1168,7 +1221,10 @@ public class MiniCP implements Solver {
 
     @Override
     public void post(Constraint c, boolean enforceFixpoint) {
-        constraints.push(c);
+        if (capture != null)
+            capture.addConstraint(c);
+        else
+            constraints.push(c);
         c.post();
         if (enforceFixpoint) {
             this.fixPoint();

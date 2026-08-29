@@ -16,7 +16,9 @@
 package xcsp;
 
 import minicpbp.cp.Factory;
+import minicpbp.engine.constraints.Intension;
 import minicpbp.engine.core.BoolVar;
+import minicpbp.engine.core.Constraint;
 import minicpbp.engine.core.IntVar;
 import minicpbp.engine.core.IntVarViewOffset;
 import minicpbp.engine.core.Solver;
@@ -72,6 +74,10 @@ public class XCSP implements XCallbacks2 {
 	private final Set<IntVar> decisionVars = new LinkedHashSet<>();
 
 	private final Solver minicp = makeSolver();
+
+	// reified decomposition of intension expression trees (flat path: leaves
+	// resolve to the outer variables)
+	private final ExprDecomposer exprDecomposer = new ExprDecomposer(minicp, x -> mapVar.get(x));
 
 	private Optional<IntVar> objectiveMinimize = Optional.empty();
 	private Optional<IntVar> realObjective = Optional.empty();
@@ -408,213 +414,35 @@ public class XCSP implements XCallbacks2 {
 	public void buildCtrLogic(String id, XVarInteger x, TypeEqNeOperator op, TypeLogicalOperator lop, XVarInteger[] vars)
 	 */
 
+	// The reified decomposition of intension expression trees lives in
+	// ExprDecomposer (shared with the encapsulated Intension constraint);
+	// these delegates keep the helper signatures used by the primitive and
+	// logic callbacks.
+
 	private IntVar unaryArithmeticOperatorConstraint(IntVar x, Types.TypeUnaryArithmeticOperator aop) {
-		switch (aop) {
-			case NEG:
-				return minus(x);
-			case ABS:
-				return abs(x);
-			case SQR:
-				return product(x,x);
-			case NOT: //treat X as a Boolean variable
-				x.removeBelow(0);
-				x.removeAbove(1);
-				return plus(minus(x),1); // not(x) = 1-x
-			default:
-			// Not needed
-			throw new IllegalArgumentException("not implemented");
-		}
+		return exprDecomposer.unaryArithmeticOperatorConstraint(x, aop);
 	}
 
 	private IntVar arithmeticOperatorConstraintVal(IntVar x, Types.TypeArithmeticOperator aop, int p) {
-		switch (aop) {
-		case ADD:
-			return plus(x, p);
-		case DIST:
-			return abs(minus(x, p));
-		case SUB:
-			return minus(x, p);
-		case MUL:
-			return mul(x, p);
-		case DIV:
-			IntVar y = makeIntVar(minicp, (p>=0? (int) Math.floor(x.min()/p): (int) Math.floor(x.max()/p)), (p>=0? (int) Math.ceil(x.max()/p): (int) Math.ceil(x.min()/p)));
-			minicp.post(equal(x, mul(y, p)));
-			return y;
-		case MOD:
-			IntVar[] xs = new IntVar[2];
-			xs[0] = x;
-			IntVar yy = makeIntVar(minicp, 0, p-1);
-			xs[1] = minus(yy);
-			minicp.post(sumModP(xs, 0, p));
-			return yy;
-		case POW:
-			return pow(x,makeIntVar(minicp,p,p));
-		default:
-			throw new IllegalArgumentException("Unknown TypeArithmeticOperator");
-		}
+		return exprDecomposer.arithmeticOperatorConstraintVal(x, aop, p);
 	}
 
 	private IntVar arithmeticOperatorConstraintVar(IntVar x, Types.TypeArithmeticOperator aop, IntVar y) {
-		switch (aop) {
-		case ADD:
-			return sum(x, y);
-		case DIST:
-			return abs(sum(x, minus(y)));
-		case SUB:
-			return sum(x, minus(y));
-		case MUL:
-			return product(x, y);
-		case DIV:
-			return quotient(x, y);
-		case MOD:
-			return modulo(x, y);
-		case POW:
-			return pow(x, y);
-		default:
-			throw new IllegalArgumentException("Unknown TypeArithmeticOperator");
-		}
+		return exprDecomposer.arithmeticOperatorConstraintVar(x, aop, y);
 	}
+
 	private IntVar reifiedRelOperatorConstraintVar(IntVar x, Types.TypeConditionOperatorRel operator, IntVar y) {
-		switch (operator) {
-			case EQ:
-				return isEqual(x, y);
-			case GE:
-				return isLargerOrEqual(x, y);
-			case GT:
-				return isLarger(x, y);
-			case LE:
-				return isLessOrEqual(x, y);
-			case LT:
-				return isLess(x, y);
-			case NE:
-				return isNotEqual(x, y);
-			default:
-				throw new InvalidParameterException("unknown condition");
-		}
+		return exprDecomposer.reifiedRelOperatorConstraintVar(x, operator, y);
 	}
+
 	private IntVar reifiedRelOperatorConstraintVal(IntVar x, Types.TypeConditionOperatorRel operator, int y) {
-		switch (operator) {
-			case EQ:
-				return isEqual(x, y);
-			case GE:
-				return isLargerOrEqual(x, y);
-			case GT:
-				return isLarger(x, y);
-			case LE:
-				return isLessOrEqual(x, y);
-			case LT:
-				return isLess(x, y);
-			case NE:
-				return isNotEqual(x, y);
-			default:
-				throw new InvalidParameterException("unknown condition");
-		}
-	}
-
-	// logic truth tables
-	int [][] tableAND = { {0,0,0}, {0,1,0}, {1,0,0}, {1,1,1}};
-	int [][] tableOR = { {0,0,0}, {0,1,1}, {1,0,1}, {1,1,1}};
-	int [][] tableXOR = { {0,0,0}, {0,1,1}, {1,0,1}, {1,1,0}};
-	int [][] tableIFF = { {0,0,1}, {0,1,0}, {1,0,0}, {1,1,1}};
-	int [][] tableIMP = { {0,0,1}, {0,1,1}, {1,0,0}, {1,1,1}};
-
-	private IntVar reifiedLogOperatorConstraint(IntVar x, Types.TypeLogicalOperator operator, IntVar y) {
-		IntVar z = makeIntVar(minicp,0,1);
-		switch (operator) {
-			case AND:
-				minicp.post(table(new IntVar[]{x,y,z},tableAND));
-				return z;
-			case OR:
-				minicp.post(table(new IntVar[]{x,y,z},tableOR));
-				return z;
-			case XOR:
-				minicp.post(table(new IntVar[]{x,y,z},tableXOR));
-				return z;
-			case IFF:
-				minicp.post(table(new IntVar[]{x,y,z},tableIFF));
-				return z;
-			case IMP:
-				minicp.post(table(new IntVar[]{x,y,z},tableIMP));
-				return z;
-			default:
-				throw new InvalidParameterException("unknown condition");
-		}
+		return exprDecomposer.reifiedRelOperatorConstraintVal(x, operator, y);
 	}
 
 	private IntVar parseExpr(XNode<XVarInteger> tree) {
-//		Log.info(tree.toString() + " op: " + tree.type + " arity: " + tree.arity());
-		Types.TypeExpr type = tree.type;
-		switch (tree.arity()) {
-			case 0:
-				if (type == Types.TypeExpr.VAR) {
-//					Log.info("in var");
-					return mapVar.get(tree.var(0));
-				} else if (type == Types.TypeExpr.LONG) {
-//					Log.info("in val");
-					int val = tree.val(0);
-//					Log.info("had to turn val into var in expression tree (shouldn't happen?)");
-					return makeIntVar(minicp, val, val);
-				} else
-					throw new IllegalArgumentException("expression tree leaf that isn't a var nor a value?");
-			case 1:
-				return unaryArithmeticOperatorConstraint(parseExpr(tree.sons[0]), type.toUnalop());
-			case 2:
-//				Log.info("in binary op");
-				if (type.isRelationalOperator()) {
-//					Log.info("in relop");
-					if (tree.sons[1].type == Types.TypeExpr.LONG) {
-//						Log.info("in rel with val; type is " + type);
-						return reifiedRelOperatorConstraintVal(parseExpr(tree.sons[0]), type.toRelop(), tree.sons[1].val(0));
-					} else {
-						return reifiedRelOperatorConstraintVar(parseExpr(tree.sons[0]), type.toRelop(), parseExpr(tree.sons[1]));
-					}
-				} else if (type.isArithmeticOperator()) {
-					if (tree.sons[1].type == Types.TypeExpr.LONG) {
-//						Log.info("in arith with val; type is " + type);
-						return arithmeticOperatorConstraintVal(parseExpr(tree.sons[0]), type.toAriop(), tree.sons[1].val(0));
-					} else {
-						return arithmeticOperatorConstraintVar(parseExpr(tree.sons[0]), type.toAriop(), parseExpr(tree.sons[1]));
-					}
-				} else if (type.isLogicalOperator()) {
-					return reifiedLogOperatorConstraint(parseExpr(tree.sons[0]), type.toLogop(), parseExpr(tree.sons[1]));
-				} else if (type == Types.TypeExpr.MAX) {
-					return maximum(new IntVar[]{parseExpr(tree.sons[0]),parseExpr(tree.sons[1])});
-				}else if (type == Types.TypeExpr.MIN) {
-					return minimum(new IntVar[]{parseExpr(tree.sons[0]),parseExpr(tree.sons[1])});
-				} else
-					throw new IllegalArgumentException("unsupported expression-tree binary node");
-			default:
-				if (type == Types.TypeExpr.MUL) {
-					IntVar cumul = parseExpr(tree.sons[0]);
-					for (int i = 1; i < tree.arity(); i++) {
-						cumul = product(cumul, parseExpr(tree.sons[i]));
-					}
-					return cumul;
-				}
-				if (type == Types.TypeExpr.ADD) {
-					IntVar[] children = new IntVar[tree.arity()];
-					for (int i = 0; i < tree.arity(); i++) {
-						children[i] = parseExpr(tree.sons[i]);
-					}
-					return sum(children);
-				}
-				if (type == Types.TypeExpr.MAX) {
-					IntVar[] children = new IntVar[tree.arity()];
-					for (int i = 0; i < tree.arity(); i++) {
-						children[i] = parseExpr(tree.sons[i]);
-					}
-					return maximum(children);
-				}
-				if (type == Types.TypeExpr.MIN) {
-					IntVar[] children = new IntVar[tree.arity()];
-					for (int i = 0; i < tree.arity(); i++) {
-						children[i] = parseExpr(tree.sons[i]);
-					}
-					return minimum(children);
-				}
-				throw new IllegalArgumentException("not implemented");
-		}
+		return exprDecomposer.parseExpr(tree);
 	}
+
 
 	@Override
 	public void buildCtrSum(String id, XVarInteger[] list, Condition condition) {
@@ -1310,8 +1138,33 @@ public class XCSP implements XCallbacks2 {
 	public void buildCtrIntension(String id, XVarInteger[] scope, XNodeParent<XVarInteger> tree) {
 		if (hasFailed)
 			return;
-		// TODO: catch cases not covered by unary/binary/ternary primitives
-		throw new NotImplementedException();
+		try {
+			if (minicpbp.util.BPConfig.INTENSION_ENCAPSULATED) {
+				// one encapsulated Intension factor over the (distinct)
+				// boundary variables; the reified decomposition is internal
+				LinkedHashSet<XVarInteger> distinct = new LinkedHashSet<>(Arrays.asList(scope));
+				XVarInteger[] xScope = distinct.toArray(new XVarInteger[0]);
+				IntVar[] boundary = new IntVar[xScope.length];
+				for (int i = 0; i < xScope.length; i++)
+					boundary[i] = mapVar.get(xScope[i]);
+				Constraint c = new Intension(minicp, boundary, copies -> {
+					Map<XVarInteger, IntVar> toCopy = new HashMap<>();
+					for (int i = 0; i < xScope.length; i++)
+						toCopy.put(xScope[i], copies[i]);
+					return new ExprDecomposer(minicp, toCopy::get).parseExpr(tree);
+				});
+				c.setName("intension:" + id);
+				minicp.post(c);
+			} else {
+				// flat reified decomposition posted into the outer solver,
+				// with the root Boolean fixed to true
+				IntVar root = exprDecomposer.parseExpr(tree);
+				root.assign(1);
+				minicp.fixPoint();
+			}
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
 	}
 
 	@Override
