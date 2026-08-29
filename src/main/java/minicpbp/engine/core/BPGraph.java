@@ -87,6 +87,8 @@ final class BPGraph implements MarginalResync {
 
     /* ---- derived schedule ------------------------------------------------- */
     private int[] order = new int[64];      // factors, spanning-forest discovery order
+    /** probe Q (amendment 13): per-invocation hint — root the forest here */
+    private IntVar preferredRoot;
     private boolean[] frozen = new boolean[64];
     private boolean[] pruned = new boolean[64];
     private boolean[] inCore = new boolean[64];
@@ -118,6 +120,12 @@ final class BPGraph implements MarginalResync {
      * Rebuilds the effective graph and its schedule from the current search
      * state. Returns the number of factors that are worth executing.
      */
+    /** probe Q (amendment 13): hint consumed by the next {@link #computeOrder};
+     *  only read when {@code minicpbp.bp.rootAtDecision} is set */
+    void setPreferredRoot(IntVar v) {
+        preferredRoot = v;
+    }
+
     int rebuild(boolean queryOnly) {
         long t0 = System.nanoTime();
         stamp++;
@@ -290,31 +298,62 @@ final class BPGraph implements MarginalResync {
     private void computeOrder() {
         for (int f = 0; f < nFactors; f++) facSeen[f] = false;
         for (int v = 0; v < nVars; v++) varSeen[v] = false;
-        int[] q = queue;
         int n = 0;
         nComponents = 0;
+        // Probe Q (amendment 13): when a preferred root variable is hinted,
+        // discover its component from it first. Reading the order backwards
+        // (the odd, inward sweep) then executes that component leaves-to-THIS-
+        // root, so the root's incident factors read fresh messages from their
+        // whole component: the collect phase for the one marginal the decision
+        // consumes. Other components and the flag-off path are unchanged.
+        if (minicpbp.util.BPConfig.ROOT_AT_DECISION && preferredRoot != null) {
+            IntVar base = preferredRoot.getBaseVar();
+            for (int v = 0; v < nVars; v++) {
+                if (varOf[v] != base) continue;
+                int head = n;
+                varSeen[v] = true;
+                for (int j = incStart[v]; j < incStart[v + 1]; j++) {
+                    int g = incFactor[j];
+                    if (facSeen[g]) continue;
+                    facSeen[g] = true;
+                    order[n++] = g;
+                }
+                if (n > head) {
+                    nComponents++;
+                    n = bfsExpand(head, n);
+                }
+                break;
+            }
+        }
         for (int root = 0; root < nFactors; root++) {
             if (facSeen[root]) continue;
             nComponents++;
             int head = n;
             facSeen[root] = true;
             order[n++] = root;
-            while (head < n) {
-                int f = order[head++];
-                for (int k = scopeStart[f]; k < scopeStart[f + 1]; k++) {
-                    int v = scopeVar[k];
-                    if (varSeen[v]) continue;
-                    varSeen[v] = true;
-                    for (int j = incStart[v]; j < incStart[v + 1]; j++) {
-                        int g = incFactor[j];
-                        if (facSeen[g]) continue;
-                        facSeen[g] = true;
-                        order[n++] = g;
-                    }
+            n = bfsExpand(head, n);
+        }
+        assert n == nFactors;
+    }
+
+    /** BFS expansion of {@link #computeOrder}: consume order[head..n) and
+     *  append newly discovered factors; returns the new n. */
+    private int bfsExpand(int head, int n) {
+        while (head < n) {
+            int f = order[head++];
+            for (int k = scopeStart[f]; k < scopeStart[f + 1]; k++) {
+                int v = scopeVar[k];
+                if (varSeen[v]) continue;
+                varSeen[v] = true;
+                for (int j = incStart[v]; j < incStart[v + 1]; j++) {
+                    int g = incFactor[j];
+                    if (facSeen[g]) continue;
+                    facSeen[g] = true;
+                    order[n++] = g;
                 }
             }
         }
-        assert n == nFactors;
+        return n;
     }
 
     /**

@@ -178,6 +178,16 @@ public final class BPConfig {
      */
     public static final DecisionRule DECISION_RULE;
 
+    /**
+     * Probe Q (BP_PROBE_PROTOCOL.md amendment 13): root the topo schedule's
+     * spanning forest at the variable dom/wdeg branching will select, so the
+     * odd (inward) sweep is the collect phase for the one marginal the
+     * decision consumes — the root's factors execute last and read fresh
+     * messages from their whole component. Requires {@code schedule=topo}.
+     * Default false: the order construction is untouched.
+     */
+    public static final boolean ROOT_AT_DECISION;
+
     static {
         SCHEDULE = Schedule.valueOf(System.getProperty("minicpbp.bp.schedule", "flood").toUpperCase());
         WARM_START = Boolean.parseBoolean(System.getProperty("minicpbp.bp.warmStart", "false"));
@@ -228,6 +238,9 @@ public final class BPConfig {
         DECISION_RULE = DecisionRule.valueOf(drule.toUpperCase());
         if (DECISION_RULE == DecisionRule.WDEG && STOP_RULE != StopRule.DECISION)
             throw new IllegalStateException("c decisionRule=wdeg is only meaningful with stopRule=decision");
+        ROOT_AT_DECISION = Boolean.parseBoolean(System.getProperty("minicpbp.bp.rootAtDecision", "false"));
+        if (ROOT_AT_DECISION && SCHEDULE != Schedule.TOPO)
+            throw new IllegalStateException("c rootAtDecision is only implemented for the topo schedule, not " + SCHEDULE);
         if (INCREMENTAL_DIRTY && !WARM_START)
             throw new IllegalStateException("c incrementalDirty requires warmStart: the reset destroys "
                     + "the stored messages whose staleness the dirty set tracks");
@@ -312,6 +325,7 @@ public final class BPConfig {
                 + " trigger=" + (DECISION_TRIGGER ? "decision" : "ship")
                 + " stopRule=" + STOP_RULE
                 + " decisionRule=" + DECISION_RULE
+                + " rootAtDecision=" + ROOT_AT_DECISION
                 + " convergeTol=" + CONVERGE_TOL
                 + " stableDecisionSweeps=" + STABLE_DECISION_SWEEPS
                 + " noEarlyStop=" + NO_EARLY_STOP

@@ -487,6 +487,12 @@ public class MiniCP implements Solver {
                 fullDirty = warmEntry();
             }
             BPScheduler sched = scheduler();
+            // Probe Q (amendment 13): hint the schedule to root its spanning
+            // forest at the variable dom/wdeg branching will select, BEFORE the
+            // rebuild inside beginInvocation consumes it. wdeg's inputs do not
+            // move during sweeps, so one computation per invocation is exact.
+            if (minicpbp.util.BPConfig.ROOT_AT_DECISION)
+                bpGraph().setPreferredRoot(wdegDecisionVar());
             // the seeding must read the watermark of the PREVIOUS invocation on
             // this path, so the update below happens after beginInvocation
             sched.beginInvocation(fullDirty);
@@ -1022,23 +1028,25 @@ public class MiniCP implements Solver {
      * not restore on backtrack. Two calls within one invocation agree, which is
      * all this needs, but the value is not a function of the marginals alone.
      */
-    private boolean decisionSettled() {
-        // Probe O (amendment 11): under decisionRule=wdeg the score replicates
-        // BranchingScheme.domWdeg (size()/wDeg(), strict min, same scan order)
-        // instead of minEntropy's entropy. wdeg's inputs do not move during BP
-        // sweeps, so the tracked variable is constant within an invocation and
-        // the check degenerates to argmax stability of its marginal — which is
-        // exactly what dom-wdeg-max-marginal branching needs watched.
-        final boolean wdegRule =
-                minicpbp.util.BPConfig.DECISION_RULE == minicpbp.util.BPConfig.DecisionRule.WDEG;
+    /**
+     * The variable dom/wdeg branching will select: strict min of
+     * {@code size()/wDeg()} over the heuristic's scan order — the
+     * branchingOrder array when registered, else the registration-order stack
+     * restricted to branching variables. Replicates
+     * {@code BranchingScheme.domWdeg}'s {@code selectMin} exactly. Shared by
+     * the decisionRule=wdeg stop (probe O, amendment 11) and the
+     * rootAtDecision schedule hint (probe Q, amendment 13); its inputs do not
+     * move during BP sweeps, so within one invocation it is a constant.
+     */
+    private IntVar wdegDecisionVar() {
         IntVar best = null;
         double bestScore = Double.MAX_VALUE;
         if (branchingOrder != null) {
             for (IntVar v : branchingOrder) {
                 if (v.size() <= 1) continue; // selectMin's predicate: unbound
-                double h = wdegRule ? ((double) v.size()) / ((double) v.wDeg()) : v.entropy();
-                if (h < bestScore) {
-                    bestScore = h;
+                double s = ((double) v.size()) / ((double) v.wDeg());
+                if (s < bestScore) {
+                    bestScore = s;
                     best = v;
                 }
             }
@@ -1047,10 +1055,46 @@ public class MiniCP implements Solver {
             while (iterator.hasNext()) {
                 IntVar v = iterator.next();
                 if (v.isBound() || !v.isForBranching()) continue;
-                double h = wdegRule ? ((double) v.size()) / ((double) v.wDeg()) : v.entropy();
-                if (h < bestScore) {
-                    bestScore = h;
+                double s = ((double) v.size()) / ((double) v.wDeg());
+                if (s < bestScore) {
+                    bestScore = s;
                     best = v;
+                }
+            }
+        }
+        return best;
+    }
+
+    private boolean decisionSettled() {
+        // Probe O (amendment 11): under decisionRule=wdeg the tracked variable
+        // replicates BranchingScheme.domWdeg instead of minEntropy. The check
+        // then degenerates to argmax stability of that one variable's marginal
+        // — which is exactly what dom-wdeg-max-marginal branching needs watched.
+        IntVar best;
+        if (minicpbp.util.BPConfig.DECISION_RULE == minicpbp.util.BPConfig.DecisionRule.WDEG) {
+            best = wdegDecisionVar();
+        } else {
+            best = null;
+            double bestEntropy = Double.MAX_VALUE;
+            if (branchingOrder != null) {
+                for (IntVar v : branchingOrder) {
+                    if (v.size() <= 1) continue; // selectMin's predicate: unbound
+                    double h = v.entropy();
+                    if (h < bestEntropy) {
+                        bestEntropy = h;
+                        best = v;
+                    }
+                }
+            } else {
+                Iterator<IntVar> iterator = variables.iterator();
+                while (iterator.hasNext()) {
+                    IntVar v = iterator.next();
+                    if (v.isBound() || !v.isForBranching()) continue;
+                    double h = v.entropy();
+                    if (h < bestEntropy) {
+                        bestEntropy = h;
+                        best = v;
+                    }
                 }
             }
         }
