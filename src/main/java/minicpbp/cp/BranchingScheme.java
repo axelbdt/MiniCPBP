@@ -994,6 +994,11 @@ public final class BranchingScheme {
     public static Supplier<Procedure[]> domWdegMaxMarginalValue(IntVar... x) {
         for (IntVar a : x)
             a.setForBranching(true);
+        // Probe O (amendment 11): register the array this heuristic scans, for
+        // the same F7 reason as minEntropy — decisionSettled() must watch the
+        // decision search will actually take, and selectMin breaks ties by
+        // array order over x, not by the engine's registration order.
+        x[0].getSolver().setBranchingOrder(x);
         return () -> {
             IntVar xs = selectMin(x,
                     xi -> xi.size() > 1,

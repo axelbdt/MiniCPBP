@@ -2356,6 +2356,14 @@ public class XCSP implements XCallbacks2 {
 			search = makeSearch(domWdeg(vars));
 			nbFailCutof = nbFailCutof*vars.length;
 			break;
+		case WDEGMXM:
+			// probe O (BP_PROBE_PROTOCOL amendment 11): dom/wdeg variable
+			// selection with max-marginal value selection. BP mode is left ON
+			// deliberately — BP's only job here is the branched variable's
+			// marginal (value selection); variable selection needs no BP.
+			// No nbFailCutof scaling: LDS/DFS only, no restart path uses it.
+			search = makeSearch(domWdegMaxMarginalValue(vars));
+			break;
 		default:
 			Log.info("unknown search strategy");
 			System.exit(1);

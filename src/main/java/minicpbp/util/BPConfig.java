@@ -161,6 +161,23 @@ public final class BPConfig {
      */
     public static final boolean DECISION_TRIGGER;
 
+    /** which variable-selection heuristic {@code decisionSettled()} replicates */
+    public enum DecisionRule {ENTROPY, WDEG}
+
+    /**
+     * Probe O (BP_PROBE_PROTOCOL.md amendment 11): the decision-stop rule
+     * watches the decision of this variable-selection heuristic.
+     * {@code ENTROPY} replicates {@code minEntropy} — the behaviour to date.
+     * {@code WDEG} replicates {@code domWdeg} (strict min of
+     * {@code size()/wDeg()} over the same scan order), for use under
+     * {@code dom-wdeg-max-marginal} branching: there the branched variable is
+     * constant within an invocation (BP filters no domains and failure counts
+     * move only in fixPoint), so the stability check degenerates to argmax
+     * stability of one variable's marginal. Rejected unless
+     * {@code stopRule=decision}. Default {@code entropy}: behaviour unchanged.
+     */
+    public static final DecisionRule DECISION_RULE;
+
     static {
         SCHEDULE = Schedule.valueOf(System.getProperty("minicpbp.bp.schedule", "flood").toUpperCase());
         WARM_START = Boolean.parseBoolean(System.getProperty("minicpbp.bp.warmStart", "false"));
@@ -205,6 +222,12 @@ public final class BPConfig {
             throw new IllegalStateException("c stopRule=converge needs -Dminicpbp.bp.convergeTol > 0");
         if (STOP_RULE == StopRule.DECISION && STABLE_DECISION_SWEEPS <= 0)
             throw new IllegalStateException("c stopRule=decision needs -Dminicpbp.bp.stableDecisionSweeps > 0");
+        String drule = System.getProperty("minicpbp.bp.decisionRule", "entropy");
+        if (!drule.equals("entropy") && !drule.equals("wdeg"))
+            throw new IllegalStateException("c minicpbp.bp.decisionRule must be entropy or wdeg, not " + drule);
+        DECISION_RULE = DecisionRule.valueOf(drule.toUpperCase());
+        if (DECISION_RULE == DecisionRule.WDEG && STOP_RULE != StopRule.DECISION)
+            throw new IllegalStateException("c decisionRule=wdeg is only meaningful with stopRule=decision");
         if (INCREMENTAL_DIRTY && !WARM_START)
             throw new IllegalStateException("c incrementalDirty requires warmStart: the reset destroys "
                     + "the stored messages whose staleness the dirty set tracks");
@@ -288,6 +311,7 @@ public final class BPConfig {
                 + " incrementalDirty=" + INCREMENTAL_DIRTY
                 + " trigger=" + (DECISION_TRIGGER ? "decision" : "ship")
                 + " stopRule=" + STOP_RULE
+                + " decisionRule=" + DECISION_RULE
                 + " convergeTol=" + CONVERGE_TOL
                 + " stableDecisionSweeps=" + STABLE_DECISION_SWEEPS
                 + " noEarlyStop=" + NO_EARLY_STOP

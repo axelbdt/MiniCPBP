@@ -1023,14 +1023,22 @@ public class MiniCP implements Solver {
      * all this needs, but the value is not a function of the marginals alone.
      */
     private boolean decisionSettled() {
+        // Probe O (amendment 11): under decisionRule=wdeg the score replicates
+        // BranchingScheme.domWdeg (size()/wDeg(), strict min, same scan order)
+        // instead of minEntropy's entropy. wdeg's inputs do not move during BP
+        // sweeps, so the tracked variable is constant within an invocation and
+        // the check degenerates to argmax stability of its marginal — which is
+        // exactly what dom-wdeg-max-marginal branching needs watched.
+        final boolean wdegRule =
+                minicpbp.util.BPConfig.DECISION_RULE == minicpbp.util.BPConfig.DecisionRule.WDEG;
         IntVar best = null;
-        double bestEntropy = Double.MAX_VALUE;
+        double bestScore = Double.MAX_VALUE;
         if (branchingOrder != null) {
             for (IntVar v : branchingOrder) {
                 if (v.size() <= 1) continue; // selectMin's predicate: unbound
-                double h = v.entropy();
-                if (h < bestEntropy) {
-                    bestEntropy = h;
+                double h = wdegRule ? ((double) v.size()) / ((double) v.wDeg()) : v.entropy();
+                if (h < bestScore) {
+                    bestScore = h;
                     best = v;
                 }
             }
@@ -1039,9 +1047,9 @@ public class MiniCP implements Solver {
             while (iterator.hasNext()) {
                 IntVar v = iterator.next();
                 if (v.isBound() || !v.isForBranching()) continue;
-                double h = v.entropy();
-                if (h < bestEntropy) {
-                    bestEntropy = h;
+                double h = wdegRule ? ((double) v.size()) / ((double) v.wDeg()) : v.entropy();
+                if (h < bestScore) {
+                    bestScore = h;
                     best = v;
                 }
             }

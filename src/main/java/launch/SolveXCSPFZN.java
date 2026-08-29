@@ -30,6 +30,7 @@ public class SolveXCSPFZN {
 		MIE, //min-entropy followed by impact entropy after first restart,
 		MNEBW, //min-entropy with biased wheel value selection
 		WDEG, //dom-wdeg
+		WDEGMXM, //dom-wdeg variable selection + max-marginal value selection, BP kept ON (probe O, BP_PROBE_PROTOCOL amendment 11)
 		IBS, //impact-based search
 	}
 
@@ -47,6 +48,7 @@ public class SolveXCSPFZN {
 			put("impact-min-entropy", BranchingHeuristic.MIE);
 			put("min-entropy-biased", BranchingHeuristic.MNEBW);
 			put("dom-wdeg", BranchingHeuristic.WDEG);
+			put("dom-wdeg-max-marginal", BranchingHeuristic.WDEGMXM);
 			put("impact-based-search", BranchingHeuristic.IBS);
 		}
 	};
