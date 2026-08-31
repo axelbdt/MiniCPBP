@@ -40,9 +40,11 @@ import org.xcsp.common.Condition;
 import org.xcsp.common.Constants;
 import org.xcsp.common.Types;
 import org.xcsp.common.predicates.XNode;
+import org.xcsp.common.predicates.XNodeLeaf;
 import org.xcsp.common.predicates.XNodeParent;
 import org.xcsp.parser.callbacks.XCallbacks2;
 import org.xcsp.parser.entries.XVariables.XVarInteger;
+import org.xcsp.parser.entries.XVariables.XVarSymbolic;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -70,6 +72,15 @@ public class XCSP implements XCallbacks2 {
 	private final Map<XVarInteger, IntVar> mapVar = new HashMap<>();
 	private final List<XVarInteger> xVars = new LinkedList<>();
 	private final List<IntVar> minicpVars = new LinkedList<>();
+
+	// Symbolic variables are solved as integers: every symbol gets an id on
+	// first sight, shared by all variables, so that comparing two symbolic
+	// variables is comparing their ids. Solutions are printed back as symbols.
+	private final Map<XVarSymbolic, IntVar> mapVarSymbolic = new LinkedHashMap<>();
+	private final List<XVarSymbolic> xVarsSymbolic = new LinkedList<>();
+	private final List<IntVar> minicpVarsSymbolic = new LinkedList<>();
+	private final Map<String, Integer> symbolId = new LinkedHashMap<>();
+	private final List<String> symbolName = new ArrayList<>();
 
 	private final Set<IntVar> decisionVars = new LinkedHashSet<>();
 
@@ -156,6 +167,124 @@ public class XCSP implements XCallbacks2 {
 		minicpVars.add(minicpVar);
 		xVars.add(x);
 		minicpVar.setName(x.id());
+	}
+
+	// ================================================================
+	// symbolic variables
+	//
+	// A symbolic variable becomes an integer variable over symbol ids. The
+	// table is global (one id per distinct symbol, in first-seen order), which
+	// is what makes eq(x,y) between two symbolic variables meaningful, and a
+	// symbol that appears in no domain still gets an id, so a comparison
+	// against it is simply false rather than an error.
+	// ================================================================
+
+	private int symbolIdOf(String symbol) {
+		Integer id = symbolId.get(symbol);
+		if (id == null) {
+			id = symbolName.size();
+			symbolId.put(symbol, id);
+			symbolName.add(symbol);
+		}
+		return id;
+	}
+
+	private IntVar[] mapVarArraySymbolic(XVarSymbolic[] list) {
+		IntVar[] xs = new IntVar[list.length];
+		for (int i = 0; i < list.length; i++)
+			xs[i] = mapVarSymbolic.get(list[i]);
+		return xs;
+	}
+
+	/** the same tree with every symbol leaf replaced by its id, so that the
+	 *  ordinary integer compiler can post it */
+	@SuppressWarnings("unchecked")
+	private XNode<XVarSymbolic> symbolsToIds(XNode<XVarSymbolic> t) {
+		if (t instanceof XNodeLeaf) {
+			if (t.type == Types.TypeExpr.SYMBOL)
+				return new XNodeLeaf<XVarSymbolic>(Types.TypeExpr.LONG,
+						(long) symbolIdOf((String) ((XNodeLeaf<XVarSymbolic>) t).value));
+			return t;
+		}
+		XNode<XVarSymbolic>[] sons = new XNode[t.sons.length];
+		for (int i = 0; i < sons.length; i++)
+			sons[i] = symbolsToIds(t.sons[i]);
+		return new XNodeParent<XVarSymbolic>(t.type, sons);
+	}
+
+	@Override
+	public void buildVarSymbolic(XVarSymbolic x, String[] values) {
+		Set<Integer> vals = new LinkedHashSet<>();
+		for (String v : values)
+			vals.add(symbolIdOf(v));
+		IntVar minicpVar = makeIntVar(minicp, vals);
+		mapVarSymbolic.put(x, minicpVar);
+		minicpVarsSymbolic.add(minicpVar);
+		xVarsSymbolic.add(x);
+		minicpVar.setName(x.id());
+	}
+
+	@Override
+	public void buildCtrAllDifferent(String id, XVarSymbolic[] list) {
+		if (hasFailed)
+			return;
+		try {
+			minicp.post(allDifferent(mapVarArraySymbolic(list)));
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
+	}
+
+	@Override
+	public void buildCtrIntension(String id, XVarSymbolic[] scope, XNodeParent<XVarSymbolic> tree) {
+		if (hasFailed)
+			return;
+		try {
+			new IntensionCompiler<XVarSymbolic>(minicp, x -> mapVarSymbolic.get(x))
+					.compileConstraint(symbolsToIds(tree));
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
+	}
+
+	@Override
+	public void buildCtrExtension(String id, XVarSymbolic x, String[] values, boolean positive,
+			Set<Types.TypeFlag> flags) {
+		if (hasFailed)
+			return;
+		try {
+			IntVar mx = mapVarSymbolic.get(x);
+			Set<Integer> ids = new LinkedHashSet<>();
+			for (String v : values)
+				ids.add(symbolIdOf(v));
+			int[] dom = new int[mx.size()];
+			int n = mx.fillArray(dom);
+			for (int i = 0; i < n; i++)
+				if (ids.contains(dom[i]) != positive)
+					mx.remove(dom[i]);
+			minicp.fixPoint();
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
+	}
+
+	@Override
+	public void buildCtrExtension(String id, XVarSymbolic[] list, String[][] tuples, boolean positive,
+			Set<Types.TypeFlag> flags) {
+		if (hasFailed)
+			return;
+		if (flags.contains(Types.TypeFlag.STARRED_TUPLES))
+			throw new NotImplementedException("starred tuples in a symbolic extension constraint");
+		try {
+			IntVar[] xs = mapVarArraySymbolic(list);
+			int[][] ids = new int[tuples.length][list.length];
+			for (int i = 0; i < tuples.length; i++)
+				for (int j = 0; j < list.length; j++)
+					ids[i][j] = symbolIdOf(tuples[i][j]);
+			minicp.post(positive ? table(xs, ids) : negTable(xs, ids));
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
 	}
 
 	private IntVar[] mapVarArray(Object vars) {
@@ -2060,6 +2189,40 @@ public class XCSP implements XCallbacks2 {
 		}
 	}
 
+	/**
+	 * The variables the search branches on: the integer ones sorted by id (see
+	 * the 2026-08-16 note below on reproducibility), then the symbolic ones in
+	 * declaration order. Symbolic variables must be here too, or a "solution"
+	 * could leave them unassigned.
+	 */
+	private IntVar[] searchVars() {
+		List<IntVar> vars = mapVar.entrySet().stream().sorted(new EntryComparator())
+				.map(Map.Entry::getValue).collect(Collectors.toList());
+		vars.addAll(minicpVarsSymbolic);
+		return vars.toArray(new IntVar[0]);
+	}
+
+	/**
+	 * The solution as an XCSP3 <instantiation>; symbolic variables are printed
+	 * as their symbols, not as the integer ids they are solved with, so that
+	 * the XCSP3 solution checker can read the result back.
+	 */
+	private String instantiationString(boolean competition) {
+		StringBuilder sol = new StringBuilder(competition
+				? "v <instantiation>\nv <list> " : "<instantiation>\n\t<list>\n\t\t");
+		for (XVarInteger x : xVars)
+			sol.append(x.id()).append(" ");
+		for (XVarSymbolic x : xVarsSymbolic)
+			sol.append(x.id()).append(" ");
+		sol.append(competition ? "</list>\nv <values> " : "\n\t</list>\n\t<values>\n\t\t");
+		for (IntVar x : minicpVars)
+			sol.append(x.min()).append(" ");
+		for (IntVar x : minicpVarsSymbolic)
+			sol.append(symbolName.get(x.min())).append(" ");
+		sol.append(competition ? "</values>\nv </instantiation>" : "\n\t</values>\n</instantiation>");
+		return sol.toString();
+	}
+
 	public String solve(int nSolution, int timeOut) {
 		AtomicReference<String> lastSolution = new AtomicReference<>("");
 		Long t0 = System.currentTimeMillis();
@@ -2089,8 +2252,7 @@ public class XCSP implements XCallbacks2 {
 	public SearchStatistics solve(BiConsumer<String, Integer> onSolution,
 			Function<SearchStatistics, Boolean> shouldStop) {
 
-		IntVar[] vars = mapVar.entrySet().stream().sorted(new EntryComparator()).map(Map.Entry::getValue)
-				.toArray(IntVar[]::new);
+		IntVar[] vars = searchVars();
 		LDSearch search;
 		// TODO change firstfail to maxMarginalStrength
 		if (decisionVars.isEmpty()) {
@@ -2112,14 +2274,8 @@ public class XCSP implements XCallbacks2 {
 		}
 
 		search.onSolution(() -> {
-			StringBuilder sol = new StringBuilder("<instantiation>\n\t<list>\n\t\t");
-			for (XVarInteger x : xVars)
-				sol.append(x.id()).append(" ");
-			sol.append("\n\t</list>\n\t<values>\n\t\t");
-			for (IntVar x : minicpVars)
-				sol.append(x.min()).append(" ");
-			sol.append("\n\t</values>\n</instantiation>");
-			onSolution.accept(sol.toString(), realObjective.map(IntVar::min).orElse(Integer.MAX_VALUE));
+			onSolution.accept(instantiationString(false),
+					realObjective.map(IntVar::min).orElse(Integer.MAX_VALUE));
 		});
 
 		return search.solve(shouldStop::apply);
@@ -2293,8 +2449,7 @@ public class XCSP implements XCallbacks2 {
 		// the next and node counts were not reproducible. Sorting by variable id
 		// makes a run depend only on the model and the heuristic, which is what a
 		// paired comparison of counting routines needs. See IMPLEMENTATION_LOG.md.
-		IntVar[] vars = mapVar.entrySet().stream().sorted(new EntryComparator())
-				.map(Map.Entry::getValue).toArray(IntVar[]::new);
+		IntVar[] vars = searchVars();
 		/* */
 
 		// 2026-08-18: a constraint-free instance (seen from a pycsp3
@@ -2389,26 +2544,10 @@ public class XCSP implements XCallbacks2 {
 		search.onSolution(() -> {
 			foundSolution = true;
 			if (extractSolutionStr) {
-				StringBuilder sol = new StringBuilder("<instantiation>\n\t<list>\n\t\t");
-				for (XVarInteger x : xVars)
-					sol.append(x.id()).append(" ");
-				sol.append("\n\t</list>\n\t<values>\n\t\t");
-				for (IntVar x : minicpVars) {
-					sol.append(x.min()).append(" ");
-				}
-				sol.append("\n\t</values>\n</instantiation>");
-				solutionStr = sol.toString();
+				solutionStr = instantiationString(false);
 			}
 			if(competitionOutput) {
-				StringBuilder sol = new StringBuilder("v <instantiation>\nv <list> ");
-				for (XVarInteger x : xVars)
-					sol.append(x.id()).append(" ");
-				sol.append("</list>\nv <values> ");
-				for (IntVar x : minicpVars) {
-					sol.append(x.min()).append(" ");
-				}
-				sol.append("</values>\nv </instantiation>");
-				solutionStr = sol.toString();
+				solutionStr = instantiationString(true);
 			}
 			// GP: printing each solution
 //			Log.info("SOLN:"+solutionStr);
@@ -2498,8 +2637,7 @@ public class XCSP implements XCallbacks2 {
 		minicp.setTraceSearchFlag(traceSearch);
 		minicp.setTraceEntropyFlag(traceEntropy);
 
-		IntVar[] vars = mapVar.entrySet().stream().sorted(new EntryComparator())
-				.map(Map.Entry::getValue).toArray(IntVar[]::new);
+		IntVar[] vars = searchVars();
 		if (vars.length == 0) {
 			DovetailSearch.Result r = new DovetailSearch.Result();
 			r.status = "UNSUPPORTED";
@@ -2516,14 +2654,7 @@ public class XCSP implements XCallbacks2 {
 			LDSearch s = makeLds(minicp, branching);
 			s.onSolution(() -> {
 				foundSolution = true;
-				StringBuilder sol = new StringBuilder("<instantiation>\n\t<list>\n\t\t");
-				for (XVarInteger x : xVars)
-					sol.append(x.id()).append(" ");
-				sol.append("\n\t</list>\n\t<values>\n\t\t");
-				for (IntVar x : minicpVars)
-					sol.append(x.min()).append(" ");
-				sol.append("\n\t</values>\n</instantiation>");
-				solutionStr = sol.toString();
+				solutionStr = instantiationString(false);
 			});
 			return s;
 		};
