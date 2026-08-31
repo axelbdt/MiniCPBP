@@ -673,6 +673,56 @@ public class XCSP implements XCallbacks2 {
 
 	// TODO: buildCtrAllDifferentExcept
 
+	/**
+	 * allDifferent over LISTS: the tuples formed by the lists must be pairwise
+	 * distinct, i.e. two lists may not agree in every position. One clause per
+	 * pair of lists over the reified position-wise disequalities.
+	 */
+	@Override
+	public void buildCtrAllDifferentList(String id, XVarInteger[][] lists) {
+		buildCtrAllDifferentList(id, lists, new int[0][]);
+	}
+
+	/**
+	 * Same, with an exception set: a pair of lists may coincide when the tuple
+	 * they share is one of the {@code except} tuples. The clause of the pair
+	 * then gains one literal per exception tuple, "this pair equals that
+	 * tuple", reified as the conjunction of its position-wise equalities.
+	 */
+	@Override
+	public void buildCtrAllDifferentList(String id, XVarInteger[][] lists, int[][] except) {
+		if (hasFailed)
+			return;
+		try {
+			IntVar[][] ls = new IntVar[lists.length][];
+			for (int i = 0; i < lists.length; i++)
+				ls[i] = mapVarArray(lists[i]);
+			for (int a = 0; a < ls.length; a++) {
+				for (int b = a + 1; b < ls.length; b++) {
+					int len = Math.min(ls[a].length, ls[b].length);
+					List<BoolVar> clause = new ArrayList<BoolVar>();
+					for (int k = 0; k < len; k++)
+						clause.add(isNotEqual(ls[a][k], ls[b][k]));
+					for (int[] e : except) {
+						if (e.length != len)
+							continue;
+						// the pair is allowed to coincide on this tuple:
+						// both lists equal it in every position
+						IntVar[] eqs = new IntVar[2 * len];
+						for (int k = 0; k < len; k++) {
+							eqs[k] = isEqual(ls[a][k], e[k]);
+							eqs[len + k] = isEqual(ls[b][k], e[k]);
+						}
+						clause.add(isEqual(sum(eqs), 2 * len));
+					}
+					minicp.post(or(clause.toArray(new BoolVar[0])));
+				}
+			}
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
+	}
+
 	@Override
 	public void buildCtrAllDifferentMatrix(String id, XVarInteger[][] matrix) {
 		if (hasFailed)
