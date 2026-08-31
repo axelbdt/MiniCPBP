@@ -75,9 +75,16 @@ public class XCSP implements XCallbacks2 {
 
 	private final Solver minicp = makeSolver();
 
-	// reified decomposition of intension expression trees (flat path: leaves
-	// resolve to the outer variables)
+	// reified decomposition of intension expression trees (kept for the
+	// encapsulated Intension constraint, whose internal factor graph is by
+	// design the reified decomposition with a conditioned root Boolean)
 	private final ExprDecomposer exprDecomposer = new ExprDecomposer(minicp, x -> mapVar.get(x));
+
+	// structural compilation of intension expression trees (flat path and
+	// tree arguments of global constraints): recognition before
+	// materialization, generic reification only as fallback
+	private final IntensionCompiler<XVarInteger> intensionCompiler =
+			new IntensionCompiler<>(minicp, x -> mapVar.get(x));
 
 	private Optional<IntVar> objectiveMinimize = Optional.empty();
 	private Optional<IntVar> realObjective = Optional.empty();
@@ -110,8 +117,14 @@ public class XCSP implements XCallbacks2 {
 		implem.currParameters.put(XCallbacksParameters.RECOGNIZE_NVALUES_CASES, new Object());
 		implem.currParameters.put(XCallbacksParameters.RECOGNIZE_COUNT_CASES, Boolean.TRUE);
 		implem.currParameters.put(XCallbacksParameters.RECOGNIZING_BEFORE_CONVERTING, Boolean.TRUE);
-		implem.currParameters.put(XCallbacksParameters.CONVERT_INTENSION_TO_EXTENSION_ARITY_LIMIT, Integer.MAX_VALUE); // included
-		implem.currParameters.put(XCallbacksParameters.CONVERT_INTENSION_TO_EXTENSION_SPACE_LIMIT, Long.MAX_VALUE); // included
+		// defaults unchanged (convert whenever the parser can enumerate the
+		// tuples); overridable so that the intension compiler can be
+		// exercised/benchmarked on real instances, e.g. spaceLimit=0 keeps
+		// every intension symbolic
+		implem.currParameters.put(XCallbacksParameters.CONVERT_INTENSION_TO_EXTENSION_ARITY_LIMIT,
+				Integer.getInteger("minicpbp.intension.toExtension.arityLimit", Integer.MAX_VALUE)); // included
+		implem.currParameters.put(XCallbacksParameters.CONVERT_INTENSION_TO_EXTENSION_SPACE_LIMIT,
+				Long.getLong("minicpbp.intension.toExtension.spaceLimit", Long.MAX_VALUE)); // included
 
 		loadInstance(fileName);
 	}
@@ -323,6 +336,22 @@ public class XCSP implements XCallbacks2 {
 			return;
 
 		try {
+			switch (aop) {
+			case ADD: // x + p op k
+				intensionCompiler.postLinearRel(new int[]{1}, new IntVar[]{mapVar.get(x)}, op, (long) k - p);
+				return;
+			case SUB: // x - p op k
+				intensionCompiler.postLinearRel(new int[]{1}, new IntVar[]{mapVar.get(x)}, op, (long) k + p);
+				return;
+			case MUL: // p*x op k
+				if (p != 0) {
+					intensionCompiler.postLinearRel(new int[]{p}, new IntVar[]{mapVar.get(x)}, op, k);
+					return;
+				}
+				break;
+			default:
+				break;
+			}
 			IntVar r = arithmeticOperatorConstraintVal(mapVar.get(x), aop, p);
 			relConstraintVal(r, op, k);
 		} catch (InconsistencyException e) {
@@ -350,6 +379,25 @@ public class XCSP implements XCallbacks2 {
 		if (hasFailed)
 			return;
 		try {
+			switch (aop) {
+			case ADD: // x + p op y  <=>  x - y op -p
+				intensionCompiler.postLinearRel(new int[]{1, -1},
+						new IntVar[]{mapVar.get(x), mapVar.get(y)}, op, -(long) p);
+				return;
+			case SUB: // x - p op y  <=>  x - y op p
+				intensionCompiler.postLinearRel(new int[]{1, -1},
+						new IntVar[]{mapVar.get(x), mapVar.get(y)}, op, p);
+				return;
+			case MUL: // p*x op y
+				if (p != 0) {
+					intensionCompiler.postLinearRel(new int[]{p, -1},
+							new IntVar[]{mapVar.get(x), mapVar.get(y)}, op, 0);
+					return;
+				}
+				break;
+			default:
+				break;
+			}
 			IntVar r = arithmeticOperatorConstraintVal(mapVar.get(x), aop, p);
 			relConstraintVar(r, op, mapVar.get(y));
 		} catch (InconsistencyException e) {
@@ -367,6 +415,16 @@ public class XCSP implements XCallbacks2 {
 		IntVar minicpY = mapVar.get(y);
 
 		try {
+			switch (aop) {
+			case ADD: // x + y op k
+				intensionCompiler.postLinearRel(new int[]{1, 1}, new IntVar[]{minicpX, minicpY}, op, k);
+				return;
+			case SUB: // x - y op k
+				intensionCompiler.postLinearRel(new int[]{1, -1}, new IntVar[]{minicpX, minicpY}, op, k);
+				return;
+			default:
+				break;
+			}
 			IntVar r = arithmeticOperatorConstraintVar(minicpX, aop, minicpY);
 			relConstraintVal(r, op, k);
 		} catch (InconsistencyException e) {
@@ -383,6 +441,18 @@ public class XCSP implements XCallbacks2 {
 			return;
 
 		try {
+			switch (aop) {
+			case ADD: // x + y op z
+				intensionCompiler.postLinearRel(new int[]{1, 1, -1},
+						new IntVar[]{mapVar.get(x), mapVar.get(y), mapVar.get(z)}, op, 0);
+				return;
+			case SUB: // x - y op z
+				intensionCompiler.postLinearRel(new int[]{1, -1, -1},
+						new IntVar[]{mapVar.get(x), mapVar.get(y), mapVar.get(z)}, op, 0);
+				return;
+			default:
+				break;
+			}
 			IntVar r = arithmeticOperatorConstraintVar(mapVar.get(x), aop, mapVar.get(y));
 			relConstraintVar(r, op, mapVar.get(z));
 		} catch (InconsistencyException e) {
@@ -440,7 +510,7 @@ public class XCSP implements XCallbacks2 {
 	}
 
 	private IntVar parseExpr(XNode<XVarInteger> tree) {
-		return exprDecomposer.parseExpr(tree);
+		return intensionCompiler.compileArithmetic(tree);
 	}
 
 
@@ -1156,11 +1226,9 @@ public class XCSP implements XCallbacks2 {
 				c.setName("intension:" + id);
 				minicp.post(c);
 			} else {
-				// flat reified decomposition posted into the outer solver,
-				// with the root Boolean fixed to true
-				IntVar root = exprDecomposer.parseExpr(tree);
-				root.assign(1);
-				minicp.fixPoint();
+				// flat path: structural compilation posts direct constraints
+				// (or domain operations); reification only as fallback
+				intensionCompiler.compileConstraint(tree);
 			}
 		} catch (InconsistencyException e) {
 			hasFailed = true;
