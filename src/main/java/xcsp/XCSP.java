@@ -1438,11 +1438,36 @@ public class XCSP implements XCallbacks2 {
 			hasFailed = true;
 		}
 	}
-/* TODO?
+	/**
+	 * count over VARIABLE values: how many entries of list take one of the
+	 * values currently taken by the value variables. among() needs a fixed
+	 * value set, so each membership is reified -- b_i = or_j (x_i = v_j) --
+	 * and the condition is applied to their sum, which buildCrtWithCondition
+	 * already handles in every form (value, variable, interval).
+	 */
 	@Override
 	public void buildCtrCount(String id, XVarInteger[] list, XVarInteger[] values, Condition condition) {
+		if (hasFailed)
+			return;
+		try {
+			IntVar[] xs = mapVarArray(list);
+			IntVar[] vs = mapVarArray(values);
+			IntVar[] bs = new IntVar[xs.length];
+			for (int i = 0; i < xs.length; i++) {
+				if (vs.length == 1) {
+					bs[i] = isEqual(xs[i], vs[0]);
+				} else {
+					BoolVar[] eq = new BoolVar[vs.length];
+					for (int j = 0; j < vs.length; j++)
+						eq[j] = isEqual(xs[i], vs[j]);
+					bs[i] = isOr(eq); // duplicated values are not double counted
+				}
+			}
+			buildCrtWithCondition(id, sum(bs), condition);
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
 	}
-*/
 	@Override
 	public void buildCtrAtLeast(String id, XVarInteger[] list, int value, int k) {
 		if (hasFailed)
