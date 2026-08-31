@@ -27,6 +27,7 @@ import minicpbp.state.Copier;
 import minicpbp.state.StateStack;
 import minicpbp.state.Trailer;
 import minicpbp.util.exception.InconsistencyException;
+import minicpbp.util.exception.NotImplementedException;
 import minicpbp.util.Procedure;
 import minicpbp.util.CFG;
 
@@ -951,17 +952,53 @@ public final class Factory {
     }
 
     /**
+     * Largest number of tuples {@link #quotientTable(IntVar, IntVar)} will
+     * enumerate. Above it the relation is refused rather than approximated:
+     * a silently wrong division is worse than a stated limit.
+     */
+    private static final int QUOTIENT_TABLE_LIMIT = 1_000_000;
+
+    /**
+     * The tuples of {@code x / y = z}, integer division truncated toward zero
+     * as XCSP3 (and Java) define it, over the current domains of x and y.
+     *
+     * Division is NOT the inverse of multiplication over the integers:
+     * {@code 7 / 2 = 3} while no integer z satisfies {@code 2 * z = 7}. The
+     * relation must therefore be stated by its own tuples; posting
+     * {@code Product(y, z, x)} instead makes every non-exact division a
+     * failure (measured: {@code and(eq(div(x,2),3),eq(x,7))} answered UNSAT,
+     * and Dominoes-grid01 answered UNSAT against a checker-validated
+     * solution).
+     */
+    private static int[][] quotientTable(IntVar x, IntVar y) {
+        y.remove(0);
+        long rows = (long) x.size() * y.size();
+        if (rows > QUOTIENT_TABLE_LIMIT)
+            throw new NotImplementedException("division over domains of size " + x.size() + " x " + y.size()
+                    + " exceeds the tuple limit " + QUOTIENT_TABLE_LIMIT);
+        int[] xs = new int[x.size()];
+        int[] ys = new int[y.size()];
+        int nx = x.fillArray(xs);
+        int ny = y.fillArray(ys);
+        int[][] tuples = new int[nx * ny][];
+        int n = 0;
+        for (int i = 0; i < nx; i++)
+            for (int j = 0; j < ny; j++)
+                tuples[n++] = new int[]{xs[i], ys[j], xs[i] / ys[j]};
+        return tuples;
+    }
+
+    /**
      * Returns a constraint imposing that the quotient of two variables
      * is equal to the third one.
      *
      * @param x a variable
      * @param y a variable
      * @param z a variable
-     * @return a constraint so that {@code x / y = z}
+     * @return a constraint so that {@code x / y = z} (truncated toward zero)
      */
     public static Constraint quotient(IntVar x, IntVar y, IntVar z) {
-	    y.remove(0);
-        return new Product(y, z, x);
+        return table(new IntVar[]{x, y, z}, quotientTable(x, y));
     }
 
     /**
@@ -969,13 +1006,20 @@ public final class Factory {
      *
      * @param x a variable
      * @param y a variable
-     * @return a variable equal to {@code x / y}
+     * @return a variable equal to {@code x / y} (truncated toward zero)
      */
     public static IntVar quotient(IntVar x, IntVar y) {
         Solver cp = x.getSolver();
-        y.remove(0);
-        IntVar z = makeIntVar(cp, Math.min(Math.min(Math.min(x.min()/y.min(),x.min()/y.max()),x.max()/y.min()),x.max()/y.max()), Math.max(Math.max(Math.max(x.min()/y.min(),x.min()/y.max()),x.max()/y.min()),x.max()/y.max()));
-        cp.post(new Product(y, z, x));
+        int[][] tuples = quotientTable(x, y);
+        // bounds read off the tuples: the corner quotients are not an envelope
+        // when y straddles zero, since |y| can be smaller inside the domain
+        int lo = tuples[0][2], hi = tuples[0][2];
+        for (int[] t : tuples) {
+            lo = Math.min(lo, t[2]);
+            hi = Math.max(hi, t[2]);
+        }
+        IntVar z = makeIntVar(cp, lo, hi);
+        cp.post(table(new IntVar[]{x, y, z}, tuples));
         return z;
     }
 
@@ -1016,26 +1060,36 @@ public final class Factory {
      * @return a constraint so that {@code x % p = z}
      */
     public static Constraint modulo(IntVar x, IntVar p, IntVar z) {
-	    p.removeBelow(1); // a modulus is >= 1
-	    z.removeBelow(0);
-        x.getSolver().post(less(z,p)); // the remainder lies between 0 and p-1
-	    // decomposed into x = k*p + z for some integer k
-        int min, max;
-        if (x.max()>=0) {
-            max = x.max() / p.min();
-        } else {
-            max = 0;
-        }
-        if (x.min()<0) {
-            min = x.min() / p.min();
-            if (x.min() % p.min() != 0) {
-               min--;
-            }
-        } else {
-            min = 0;
-        }
-        IntVar k = makeIntVar(x.getSolver(), min, max); // min( 0, floor(min(x) / min(p)) ) <= k <= max( 0, floor(max(x) / min(p)) )
-        return new Equal(x,sum(product(k,p),z));
+        return table(new IntVar[]{x, p, z}, moduloTable(x, p));
+    }
+
+    /**
+     * The tuples of {@code x % p = z} over the current domains of x and p.
+     *
+     * The remainder takes the sign of the DIVIDEND and the modulus may be
+     * negative, as XCSP3 (and Java, and FlatZinc int_mod) define it, verified
+     * against the parser's own tuple evaluator: mod(-3,2) = -1, mod(3,-2) = 1.
+     * The previous decomposition {@code x = k*p + z} with {@code 0 <= z < p}
+     * is the floored remainder and additionally imposed {@code p >= 1}, so a
+     * negative dividend got the wrong value and a negative modulus threw
+     * "at least one setValue in the domain" while building an empty domain.
+     */
+    private static int[][] moduloTable(IntVar x, IntVar p) {
+        p.remove(0); // a modulus is nonzero
+        long rows = (long) x.size() * p.size();
+        if (rows > QUOTIENT_TABLE_LIMIT)
+            throw new NotImplementedException("modulo over domains of size " + x.size() + " x " + p.size()
+                    + " exceeds the tuple limit " + QUOTIENT_TABLE_LIMIT);
+        int[] xs = new int[x.size()];
+        int[] ps = new int[p.size()];
+        int nx = x.fillArray(xs);
+        int np = p.fillArray(ps);
+        int[][] tuples = new int[nx * np][];
+        int n = 0;
+        for (int i = 0; i < nx; i++)
+            for (int j = 0; j < np; j++)
+                tuples[n++] = new int[]{xs[i], ps[j], xs[i] % ps[j]};
+        return tuples;
     }
 
     /**
@@ -1043,12 +1097,18 @@ public final class Factory {
      *
      * @param x a variable
      * @param p a variable (the modulus)
-     * @return a variable equal to {@code x % p}
+     * @return a variable equal to {@code x % p}, of the sign of {@code x}
      */
     public static IntVar modulo(IntVar x, IntVar p) {
         Solver cp = x.getSolver();
-        IntVar z = makeIntVar(cp, 0, p.max() - 1);
-        cp.post(modulo(x, p, z));
+        int[][] tuples = moduloTable(x, p);
+        int lo = tuples[0][2], hi = tuples[0][2];
+        for (int[] t : tuples) {
+            lo = Math.min(lo, t[2]);
+            hi = Math.max(hi, t[2]);
+        }
+        IntVar z = makeIntVar(cp, lo, hi);
+        cp.post(table(new IntVar[]{x, p, z}, tuples));
         return z;
     }
 

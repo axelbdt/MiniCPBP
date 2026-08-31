@@ -68,16 +68,17 @@ public class ExprDecomposer {
 		case MUL:
 			return mul(x, p);
 		case DIV:
-			IntVar y = makeIntVar(minicp, (p>=0? (int) Math.floor(x.min()/p): (int) Math.floor(x.max()/p)), (p>=0? (int) Math.ceil(x.max()/p): (int) Math.ceil(x.min()/p)));
-			minicp.post(equal(x, mul(y, p)));
-			return y;
+			// integer division truncated toward zero, not the inverse of
+			// multiplication: 7/2 = 3 although no y satisfies 2y = 7, so
+			// "equal(x, mul(y, p))" made every non-exact division fail.
+			// Factory.quotient states the relation by its own tuples.
+			return quotient(x, makeIntVar(minicp, p, p));
 		case MOD:
-			IntVar[] xs = new IntVar[2];
-			xs[0] = x;
-			IntVar yy = makeIntVar(minicp, 0, p-1);
-			xs[1] = minus(yy);
-			minicp.post(sumModP(xs, 0, p));
-			return yy;
+			// the remainder takes the sign of the dividend and the modulus may
+			// be negative (XCSP3/Java): a 0..p-1 remainder built by sumModP is
+			// the floored one, wrong for a negative x and undefined for p <= 0.
+			// Factory.modulo states the relation by its own tuples.
+			return modulo(x, makeIntVar(minicp, p, p));
 		case POW:
 			return pow(x,makeIntVar(minicp,p,p));
 		default:

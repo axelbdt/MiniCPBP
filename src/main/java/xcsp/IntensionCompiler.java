@@ -129,6 +129,18 @@ public class IntensionCompiler<V extends IVar> {
 				}
 				break;
 			case NE:
+				if (t.arity() == 2) {
+					postRelation(diff(t.sons[0], t.sons[1]), TypeConditionOperatorRel.NE);
+					return;
+				}
+				if (t.arity() > 2) {
+					// n-ary ne is pairwise distinctness (XCSP3); one
+					// allDifferent factor, not the pairwise decomposition,
+					// so BP sees the constraint whole
+					cp.post(allDifferent(compileAll(t.sons)));
+					return;
+				}
+				break;
 			case LT:
 			case LE:
 			case GE:
@@ -296,7 +308,32 @@ public class IntensionCompiler<V extends IVar> {
 				return not(compileBoolean(son));
 			}
 			case EQ:
+				if (t.arity() == 2)
+					return reifyRelation(diff(t.sons[0], t.sons[1]), TypeConditionOperatorRel.EQ);
+				if (t.arity() > 2) {
+					// n-ary eq (all sons equal): the conjunction of the same
+					// chain of binary equalities compile() posts hard
+					List<BoolVar> chain = new ArrayList<>();
+					for (int i = 0; i + 1 < t.arity(); i++)
+						chain.add(reifyRelation(diff(t.sons[i], t.sons[i + 1]),
+								TypeConditionOperatorRel.EQ));
+					return allOf(chain);
+				}
+				break;
 			case NE:
+				if (t.arity() == 2)
+					return reifyRelation(diff(t.sons[0], t.sons[1]), TypeConditionOperatorRel.NE);
+				if (t.arity() > 2) {
+					// n-ary ne (pairwise distinct): reified pair by pair, since
+					// allDifferent has no reified form here
+					List<BoolVar> pairs = new ArrayList<>();
+					for (int i = 0; i < t.arity(); i++)
+						for (int j = i + 1; j < t.arity(); j++)
+							pairs.add(reifyRelation(diff(t.sons[i], t.sons[j]),
+									TypeConditionOperatorRel.NE));
+					return allOf(pairs);
+				}
+				break;
 			case LT:
 			case LE:
 			case GE:
@@ -315,15 +352,7 @@ public class IntensionCompiler<V extends IVar> {
 					}
 					bs.add(compileBoolean(son));
 				}
-				if (bs.isEmpty())
-					return boolConst(true);
-				if (bs.size() == 1)
-					return bs.get(0);
-				// and(b1..bn) = not(or(not b1.. not bn)), negations are views
-				BoolVar[] negs = new BoolVar[bs.size()];
-				for (int i = 0; i < negs.length; i++)
-					negs[i] = not(bs.get(i));
-				return not(isOr(negs));
+				return allOf(bs);
 			}
 			case OR: {
 				List<BoolVar> bs = new ArrayList<>();
@@ -347,7 +376,13 @@ public class IntensionCompiler<V extends IVar> {
 			case IFF: {
 				if (t.arity() == 2)
 					return isEqual((IntVar) compileBoolean(t.sons[0]), (IntVar) compileBoolean(t.sons[1]));
-				break;
+				// n-ary iff (all truth values equal): the conjunction of the
+				// same chain against son 0 that compile() posts hard
+				BoolVar b0 = compileBoolean(t.sons[0]);
+				List<BoolVar> chain = new ArrayList<>();
+				for (int i = 1; i < t.arity(); i++)
+					chain.add(isEqual((IntVar) b0, (IntVar) compileBoolean(t.sons[i])));
+				return allOf(chain);
 			}
 			case XOR: {
 				if (t.arity() == 2)
@@ -379,6 +414,16 @@ public class IntensionCompiler<V extends IVar> {
 			default:
 				break;
 		}
+		// A predicate node must never reach the arithmetic fallback:
+		// materializeNonLinear() sends every predicate type back here, so a
+		// fall-through with one recurs compileBoolean -> compileArithmetic ->
+		// materializeNonLinear -> compileBoolean until the stack overflows.
+		// n-ary eq did exactly that (RotatingRostering-008-2-3, and
+		// imp(ne(x,y),eq(x,y,x)) as a two-variable reproduction); it is handled
+		// above now, and anything still unsupported must say so.
+		if (isPredicate(t.type))
+			throw new IllegalArgumentException("unsupported predicate node in Boolean position: "
+					+ t.type + " of arity " + t.arity());
 		// arithmetic expression used in a Boolean position: constrain to 0/1
 		IntVar s = compileArithmetic(t);
 		if (s instanceof BoolVar)
@@ -386,6 +431,54 @@ public class IntensionCompiler<V extends IVar> {
 		s.removeBelow(0);
 		s.removeAbove(1);
 		return isEqual(s, 1);
+	}
+
+	/** the sons as integer variables, in order */
+	private IntVar[] compileAll(XNode<V>[] sons) {
+		IntVar[] xs = new IntVar[sons.length];
+		for (int i = 0; i < sons.length; i++)
+			xs[i] = compileArithmetic(sons[i]);
+		return xs;
+	}
+
+	/** conjunction of reified Booleans; negations are views, so one isOr */
+	private BoolVar allOf(List<BoolVar> bs) {
+		if (bs.isEmpty())
+			return boolConst(true);
+		if (bs.size() == 1)
+			return bs.get(0);
+		// and(b1..bn) = not(or(not b1.. not bn))
+		BoolVar[] negs = new BoolVar[bs.size()];
+		for (int i = 0; i < negs.length; i++)
+			negs[i] = not(bs.get(i));
+		return not(isOr(negs));
+	}
+
+	/**
+	 * The node types materializeNonLinear() routes back to compileBoolean().
+	 * Keep the two lists in step: a type that is predicate here and absent
+	 * there (or the reverse) reopens the recursion the guard above closes.
+	 */
+	private static boolean isPredicate(TypeExpr type) {
+		switch (type) {
+			case EQ:
+			case NE:
+			case LT:
+			case LE:
+			case GE:
+			case GT:
+			case NOT:
+			case AND:
+			case OR:
+			case XOR:
+			case IFF:
+			case IMP:
+			case IN:
+			case NOTIN:
+				return true;
+			default:
+				return false;
+		}
 	}
 
 	/**
