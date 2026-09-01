@@ -7,7 +7,7 @@
  *
  * System properties
  * -----------------
- *  minicpbp.bp.schedule   flood | seq | seqfb | topo | residual
+ *  minicpbp.bp.schedule   flood | seq | seqfb | topo | residual | inward
  *                         (default flood = the historical Jacobi sweep:
  *                          every active constraint receives, all marginals
  *                          are reset, every active constraint sends)
@@ -22,6 +22,17 @@
  *                independent cycle, which is the minimum
  *      residual  asynchronous priority scheduling on message residuals,
  *                seeded with the topo order
+ *      inward    the collect half of topo, restricted to the decision
+ *                variable's component: one leaves-to-root pass over
+ *                order[0..rootComponentEnd), nothing outward, other
+ *                components never executed. Computes fresh information for
+ *                exactly one marginal -- the one value selection reads --
+ *                so it requires rootAtDecision (the root would otherwise be
+ *                posting-order arbitrary) and a stop rule that does not
+ *                read non-root marginals (fixed or decision). KNOWN COST:
+ *                a wipeout in another component goes unseen, so UNSAT
+ *                detection through problemEntropy()==0 is weakened by
+ *                construction
  *  minicpbp.bp.warmStart  true | false  (default false)
  *                         keep the restored marginals/local beliefs when BP
  *                         is triggered instead of resetting them to uniform
@@ -34,11 +45,18 @@
  *                         factor dirty. Requires warmStart: the cold reset
  *                         destroys every stored message, so there is nothing
  *                         whose staleness could be tested
- *                         (BP_WARM_START_EXPERIMENT.md section 1.3). Exact,
- *                         not approximate: a skipped factor would have
- *                         recomputed the same message from the same inputs,
- *                         so results must agree bit for bit with full seeding.
- *                         topo and residual only.
+ *                         (BP_WARM_START_EXPERIMENT.md section 1.3). Exact
+ *                         ONLY at residualTol=0 (INCREMENTAL_MECHANISMS.md
+ *                         F3): the seeding itself is watermark-exact, but
+ *                         spreadDirty clips sub-tolerance movement, so a
+ *                         skipped factor never absorbs a neighbour's <= tol
+ *                         drift that full seeding would have applied; under
+ *                         max-marginal branching an O(tol) marginal
+ *                         difference at a near-tie flips the trajectory
+ *                         (measured 2/14 at tol=1e-6, bit-identical again at
+ *                         tol=0). At tol>0 this is a behaviour-changing arm,
+ *                         not a transparent optimisation.
+ *                         topo, residual and inward only.
  *  minicpbp.bp.updateThreshold  double (default 0.05)
  *                         relative decrease of the summed domain size below
  *                         which BP is skipped and the current marginals are
@@ -100,7 +118,7 @@ package minicpbp.util;
 
 public final class BPConfig {
 
-    public enum Schedule {FLOOD, SEQ, SEQFB, TOPO, RESIDUAL}
+    public enum Schedule {FLOOD, SEQ, SEQFB, TOPO, RESIDUAL, INWARD}
 
     /**
      * The stopping rule in force. Exactly one is, and it replaces the others.
@@ -131,6 +149,11 @@ public final class BPConfig {
      *  requires WARM_START (BP_WARM_START_EXPERIMENT.md section 1.3) */
     public static final boolean INCREMENTAL_DIRTY;
     public static final boolean QUERY_ONLY;
+    /** measurement-only: skip phase-3 residual arithmetic (see static init) */
+    public static final boolean MEASURE_NO_RESIDUAL;
+    /** compute the per-sweep entropy scans only where something reads them
+     *  (see static init); semantics-preserving, unlike MEASURE_NO_RESIDUAL */
+    public static final boolean LEAN_MONITOR;
     public static final double RESIDUAL_TOL;
     public static final String STATS_FILE;
     public static final boolean DUMP_GRAPH;
@@ -251,14 +274,47 @@ public final class BPConfig {
         if (DECISION_RULE == DecisionRule.WDEG && STOP_RULE != StopRule.DECISION)
             throw new IllegalStateException("c decisionRule=wdeg is only meaningful with stopRule=decision");
         ROOT_AT_DECISION = Boolean.parseBoolean(System.getProperty("minicpbp.bp.rootAtDecision", "false"));
-        if (ROOT_AT_DECISION && SCHEDULE != Schedule.TOPO)
-            throw new IllegalStateException("c rootAtDecision is only implemented for the topo schedule, not " + SCHEDULE);
+        if (ROOT_AT_DECISION && SCHEDULE != Schedule.TOPO && SCHEDULE != Schedule.INWARD)
+            throw new IllegalStateException("c rootAtDecision is only implemented for the topo and inward schedules, not " + SCHEDULE);
+        // the inward schedule is incoherent without the hint: computeOrder would
+        // root the collect pass at whichever factor was posted first, and the
+        // one marginal the pass is built to serve would sit mid-tree
+        if (SCHEDULE == Schedule.INWARD && !ROOT_AT_DECISION)
+            throw new IllegalStateException("c schedule=inward requires -Dminicpbp.bp.rootAtDecision=true");
+        // one inward pass leaves every non-root marginal half-updated (fresh
+        // from its subtree side only), so a stop rule that reads them --
+        // shipped's smallestVariableEntropy, converge's marginalMovement --
+        // would be measuring garbage rather than the schedule
+        if (SCHEDULE == Schedule.INWARD
+                && STOP_RULE != StopRule.FIXED && STOP_RULE != StopRule.DECISION)
+            throw new IllegalStateException("c schedule=inward needs stopRule=fixed or decision, not "
+                    + STOP_RULE + ": non-root marginals are half-updated and must not feed a stop rule");
+        // Measurement-only (incremental-mechanism evaluation): skip the phase-3
+        // residual arithmetic and return residual 0.0, which also suppresses
+        // spreadDirty at the call site. Sound ONLY where nothing consumes
+        // residuals: a fixed 1-sweep budget without incrementalDirty. Bounds
+        // mechanism 1's dead work from above; never a production dial.
+        MEASURE_NO_RESIDUAL = Boolean.parseBoolean(System.getProperty("minicpbp.bp.measureNoResidual", "false"));
+        if (MEASURE_NO_RESIDUAL && (INCREMENTAL_DIRTY || SCHEDULE == Schedule.RESIDUAL))
+            throw new IllegalStateException("c measureNoResidual would corrupt a consumer of residuals: "
+                    + "incrementalDirty=" + INCREMENTAL_DIRTY + " schedule=" + SCHEDULE);
+        // The monitor callback runs three full scans of the variable stack per
+        // sweep, of which two are conditional on a consumer that is usually
+        // absent: smallestVariableEntropy() is read only by the SHIPPED stop
+        // rule (and by traceBP's log line), and nbBranchingVariables() only by
+        // Log.modelEntropy, whose body returns at once unless traceEntropy is
+        // set. This computes each only when something reads it. Behaviour is
+        // identical in every configuration -- both quantities are pure
+        // functions of state the monitor does not modify -- so unlike
+        // measureNoResidual it needs no soundness guard.
+        LEAN_MONITOR = Boolean.parseBoolean(System.getProperty("minicpbp.bp.leanMonitor", "false"));
         if (INCREMENTAL_DIRTY && !WARM_START)
             throw new IllegalStateException("c incrementalDirty requires warmStart: the reset destroys "
                     + "the stored messages whose staleness the dirty set tracks");
-        if (INCREMENTAL_DIRTY && SCHEDULE != Schedule.TOPO && SCHEDULE != Schedule.RESIDUAL)
-            throw new IllegalStateException("c incrementalDirty is only implemented for topo and residual, "
-                    + "not " + SCHEDULE);
+        if (INCREMENTAL_DIRTY && SCHEDULE != Schedule.TOPO && SCHEDULE != Schedule.RESIDUAL
+                && SCHEDULE != Schedule.INWARD)
+            throw new IllegalStateException("c incrementalDirty is only implemented for topo, residual "
+                    + "and inward, not " + SCHEDULE);
     }
 
     private BPConfig() {
@@ -306,8 +362,17 @@ public final class BPConfig {
             throw new IllegalStateException("c stopRule=converge needs -Dminicpbp.bp.convergeTol > 0");
         if (INCREMENTAL_DIRTY && !p.warmStart)
             throw new IllegalStateException("c incrementalDirty requires warmStart");
-        if (INCREMENTAL_DIRTY && p.schedule != Schedule.TOPO && p.schedule != Schedule.RESIDUAL)
-            throw new IllegalStateException("c incrementalDirty is only implemented for topo and residual");
+        if (INCREMENTAL_DIRTY && p.schedule != Schedule.TOPO && p.schedule != Schedule.RESIDUAL
+                && p.schedule != Schedule.INWARD)
+            throw new IllegalStateException("c incrementalDirty is only implemented for topo, residual and inward");
+        // same invariants as the static initializer: a dovetail pass must not
+        // reach a configuration a JVM could not have been started in
+        if (p.schedule == Schedule.INWARD && !ROOT_AT_DECISION)
+            throw new IllegalStateException("c schedule=inward requires -Dminicpbp.bp.rootAtDecision=true");
+        if (p.schedule == Schedule.INWARD
+                && p.stopRule != StopRule.FIXED && p.stopRule != StopRule.DECISION)
+            throw new IllegalStateException("c schedule=inward needs stopRule=fixed or decision, not "
+                    + p.stopRule);
         boolean scheduleChanged = SCHEDULE != p.schedule;
         SCHEDULE = p.schedule;
         WARM_START = p.warmStart;
@@ -338,6 +403,7 @@ public final class BPConfig {
                 + " stopRule=" + STOP_RULE
                 + " decisionRule=" + DECISION_RULE
                 + " rootAtDecision=" + ROOT_AT_DECISION
+                + " leanMonitor=" + LEAN_MONITOR
                 + " convergeTol=" + CONVERGE_TOL
                 + " stableDecisionSweeps=" + STABLE_DECISION_SWEEPS
                 + " noEarlyStop=" + NO_EARLY_STOP

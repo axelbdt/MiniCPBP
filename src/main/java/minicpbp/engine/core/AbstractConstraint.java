@@ -518,6 +518,7 @@ public abstract class AbstractConstraint implements Constraint {
      * scheduling
      */
     public double updateMessagesInPlace(MarginalResync resync) {
+        long _t0 = System.nanoTime();
         if (cavityBelief == null) {
             cavityBelief = new double[vars.length][];
             prevLocalBelief = new double[vars.length][];
@@ -626,14 +627,19 @@ public abstract class AbstractConstraint implements Constraint {
                 }
             }
         }
+        long _t1 = System.nanoTime();
+        minicpbp.util.BPStats.phase1Nanos += _t1 - _t0;
         // phase 2: the weighted counting
         if (!minicpbp.util.DeltaProbe.HOOK || !probeBeforeUpdateBelief())
             updateBelief();
+        long _t2 = System.nanoTime();
+        minicpbp.util.BPStats.phase2Nanos += _t2 - _t1;
         // phase 3: publish the new messages into the marginals
         double residual = 0.0;
         for (int i = 0; i < vars.length; i++) {
             msgResidual[i] = 0.0;
             if (vars[i].isBound()) continue; // a "certainly true" message changes nothing
+            minicpbp.util.BPStats.msgWrites++;
             int s = vars[i].fillArray(domainValues);
             normalizeLocalCached(i, s);
             double mass = 0.0;
@@ -641,8 +647,13 @@ public abstract class AbstractConstraint implements Constraint {
                 int val = domainValues[j];
                 double b = beliefRep.pow(localBelief(i, val), this.weight);
                 double old = prevLocalBelief[i][val - ofs[i]];
-                double delta = Math.abs(beliefRep.rep2std(b) - beliefRep.rep2std(old));
-                if (delta > msgResidual[i]) msgResidual[i] = delta;
+                // measurement flag (incremental-mechanism evaluation): the
+                // residual is dead work when nothing consumes it; static final,
+                // so the branch folds away in production
+                if (!minicpbp.util.BPConfig.MEASURE_NO_RESIDUAL) {
+                    double delta = Math.abs(beliefRep.rep2std(b) - beliefRep.rep2std(old));
+                    if (delta > msgResidual[i]) msgResidual[i] = delta;
+                }
                 // the zero-aware product tracks messages, not marginals, so it
                 // is updated whatever the cavity turned out to be
                 vars[i].messageReplaced(val, old, b);
@@ -680,6 +691,7 @@ public abstract class AbstractConstraint implements Constraint {
                 vars[i].normalizeMarginals(); // keep the product away from underflow
             }
         }
+        minicpbp.util.BPStats.phase3Nanos += System.nanoTime() - _t2;
         return residual;
     }
 

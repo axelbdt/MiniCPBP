@@ -63,9 +63,16 @@ public final class FloodingScheduler implements BPScheduler {
                 BPStats.factorUpdates++;
             }
         }
+        // timed on both paths (BPGraph.normalizeMarginals is the other one) so
+        // that the per-sweep renormalisation can be compared between a schedule
+        // that rewrote every marginal from scratch this sweep and one that
+        // rewrote only a prefix
+        long t0 = System.nanoTime();
         iterator = cp.getVariables().iterator();
         while (iterator.hasNext()) {
             iterator.next().normalizeMarginals();
         }
+        BPStats.normalizeNanos += System.nanoTime() - t0;
+        BPStats.normalizeCalls++;
     }
 }

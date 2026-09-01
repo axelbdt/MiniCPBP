@@ -192,6 +192,9 @@ public class MiniCP implements Solver {
                 case RESIDUAL:
                     scheduler = new ResidualScheduler(bpGraph());
                     break;
+                case INWARD:
+                    scheduler = new InwardScheduler(bpGraph());
+                    break;
                 default:
                     scheduler = new FloodingScheduler(this);
             }
@@ -564,50 +567,12 @@ public class MiniCP implements Solver {
             convergeSnapshotValid = false;
             final minicpbp.util.BPConfig.StopRule rule = minicpbp.util.BPConfig.STOP_RULE;
             sched.run(beliefPropaMaxIter, iter -> {
-                Log.bpIteration(iter, variables);
-                // Probe H (BP_PROBE_PROTOCOL.md amendment 4): per-sweep
-                // decision trace; static final gate, dead code when off
-                if (minicpbp.util.SweepTrace.ENABLED)
-                    minicpbp.util.SweepTrace.record(this, iter);
-                double previousEntropy = entropy[0];
-                double currentEntropy = problemEntropy();
-                entropy[0] = currentEntropy;
-                double smallEntropy = smallestVariableEntropy();
-                if (dampingMessages())
-                    prevOutsideBeliefRecorded = true;
-                Log.bpEntropy(currentEntropy, smallEntropy);
-                Log.modelEntropy(variables, nbBranchingVariables());
-                // Stopping criteria. Exactly one rule is in force and it
-                // REPLACES the others (F6): the shipped code tested three of
-                // them in sequence, so whichever sat highest in the body won,
-                // NO_EARLY_STOP returned before STABLE_DECISION_SWEEPS was ever
-                // read, and MIN_VAR_ENTROPY fired within one or two sweeps and
-                // made the knob below it inert.
-                if (currentEntropy == 0) {
-                    // either all branching vars are bound or BP says there is no
-                    // solution: a correctness stop, in force in every mode
-                    return true;
-                }
-                switch (rule) {
-                    case FIXED:
-                        return false; // R1: measure at a fixed sweep budget
-                    case CONVERGE:
-                        // R2: the only criterion about movement rather than
-                        // confidence. The first sweep has nothing to compare
-                        // against, so it never stops there.
-                        return marginalMovement() <= minicpbp.util.BPConfig.CONVERGE_TOL;
-                    case DECISION:
-                        return decisionSettled(); // R3, Level 2 research
-                    default:
-                        // R0, production as it ships. CAVEAT: only really makes
-                        // sense when branching on min entropy or max marginal.
-                        if (smallEntropy <= MIN_VAR_ENTROPY) {
-                            // at least one variable is nearly certain of its value
-                            return true;
-                        }
-                        // marginals probably did not change either (and won't in the future)
-                        return (iter > 1) /* give it a chance to kick in */
-                                && (currentEntropy == previousEntropy);
+                long t0 = System.nanoTime();
+                try {
+                    return sweepMonitor(iter, entropy, rule);
+                } finally {
+                    minicpbp.util.BPStats.monitorNanos += System.nanoTime() - t0;
+                    minicpbp.util.BPStats.monitorCalls++;
                 }
             });
             sched.endInvocation();
@@ -616,6 +581,90 @@ public class MiniCP implements Solver {
             while (!propagationQueue.isEmpty())
                 propagationQueue.remove().setScheduled(false);
             throw e;
+        }
+    }
+
+    /**
+     * The per-sweep engine work, called once after every sweep whatever the
+     * schedule: the entropy scans, the trace hooks and the stop rule. Extracted
+     * from the lambda in {@link #beliefPropaImpl} so that it can be timed as a
+     * whole ({@code BPStats.monitorNanos}) and split into the four scans it
+     * performs. Semantics are unchanged, including the order of the two entropy
+     * computations and the fact that both are computed whatever the rule in
+     * force.
+     * <p>
+     * The four sub-timers exist because the scans are not equally justified.
+     * {@code problemEntropy()} feeds the {@code == 0} correctness stop, which is
+     * in force in every mode. {@code smallestVariableEntropy()} is read only by
+     * the SHIPPED branch, {@code nbBranchingVariables()} only by a logger that
+     * returns immediately unless {@code traceEntropy} is set, and the stop rule
+     * itself only decides a sweep {@code k+1} that a 1-sweep cap never runs.
+     */
+    private boolean sweepMonitor(int iter, double[] entropy,
+                                 minicpbp.util.BPConfig.StopRule rule) {
+        Log.bpIteration(iter, variables);
+        // Probe H (BP_PROBE_PROTOCOL.md amendment 4): per-sweep
+        // decision trace; static final gate, dead code when off
+        if (minicpbp.util.SweepTrace.ENABLED)
+            minicpbp.util.SweepTrace.record(this, iter);
+        double previousEntropy = entropy[0];
+        long t0 = System.nanoTime();
+        double currentEntropy = problemEntropy();
+        long t1 = System.nanoTime();
+        entropy[0] = currentEntropy;
+        // read by the SHIPPED branch below and by the traceBP log line, by
+        // nothing else. Under leanMonitor it is computed only for those two.
+        double smallEntropy = (!minicpbp.util.BPConfig.LEAN_MONITOR
+                || rule == minicpbp.util.BPConfig.StopRule.SHIPPED
+                || Log.isTracingBP())
+                ? smallestVariableEntropy() : Double.MAX_VALUE;
+        long t2 = System.nanoTime();
+        if (dampingMessages())
+            prevOutsideBeliefRecorded = true;
+        Log.bpEntropy(currentEntropy, smallEntropy);
+        // the argument is a full scan of the variable stack and is evaluated
+        // whether or not the logger's body runs
+        if (!minicpbp.util.BPConfig.LEAN_MONITOR || Log.isTracingEntropy())
+            Log.modelEntropy(variables, nbBranchingVariables());
+        long t3 = System.nanoTime();
+        minicpbp.util.BPStats.problemEntropyNanos += t1 - t0;
+        minicpbp.util.BPStats.smallEntropyNanos += t2 - t1;
+        minicpbp.util.BPStats.logArgNanos += t3 - t2;
+        try {
+            // Stopping criteria. Exactly one rule is in force and it
+            // REPLACES the others (F6): the shipped code tested three of
+            // them in sequence, so whichever sat highest in the body won,
+            // NO_EARLY_STOP returned before STABLE_DECISION_SWEEPS was ever
+            // read, and MIN_VAR_ENTROPY fired within one or two sweeps and
+            // made the knob below it inert.
+            if (currentEntropy == 0) {
+                // either all branching vars are bound or BP says there is no
+                // solution: a correctness stop, in force in every mode
+                return true;
+            }
+            switch (rule) {
+                case FIXED:
+                    return false; // R1: measure at a fixed sweep budget
+                case CONVERGE:
+                    // R2: the only criterion about movement rather than
+                    // confidence. The first sweep has nothing to compare
+                    // against, so it never stops there.
+                    return marginalMovement() <= minicpbp.util.BPConfig.CONVERGE_TOL;
+                case DECISION:
+                    return decisionSettled(); // R3, Level 2 research
+                default:
+                    // R0, production as it ships. CAVEAT: only really makes
+                    // sense when branching on min entropy or max marginal.
+                    if (smallEntropy <= MIN_VAR_ENTROPY) {
+                        // at least one variable is nearly certain of its value
+                        return true;
+                    }
+                    // marginals probably did not change either (and won't in the future)
+                    return (iter > 1) /* give it a chance to kick in */
+                            && (currentEntropy == previousEntropy);
+            }
+        } finally {
+            minicpbp.util.BPStats.stopRuleNanos += System.nanoTime() - t3;
         }
     }
 

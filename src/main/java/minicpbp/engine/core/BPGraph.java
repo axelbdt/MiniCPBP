@@ -89,6 +89,11 @@ final class BPGraph implements MarginalResync {
     private int[] order = new int[64];      // factors, spanning-forest discovery order
     /** probe Q (amendment 13): per-invocation hint — root the forest here */
     private IntVar preferredRoot;
+    /** end of the preferred root's component in {@link #order}: the factors in
+     *  order[0..rootComponentEnd) are exactly that component when the hint was
+     *  consumed, and rootComponentEnd == nFactors otherwise, so a prefix
+     *  iteration degrades to the whole forest. Consumed by the inward schedule */
+    private int rootComponentEnd;
     private boolean[] frozen = new boolean[64];
     private boolean[] pruned = new boolean[64];
     private boolean[] inCore = new boolean[64];
@@ -300,6 +305,7 @@ final class BPGraph implements MarginalResync {
         for (int v = 0; v < nVars; v++) varSeen[v] = false;
         int n = 0;
         nComponents = 0;
+        rootComponentEnd = -1;
         // Probe Q (amendment 13): when a preferred root variable is hinted,
         // discover its component from it first. Reading the order backwards
         // (the odd, inward sweep) then executes that component leaves-to-THIS-
@@ -321,6 +327,7 @@ final class BPGraph implements MarginalResync {
                 if (n > head) {
                     nComponents++;
                     n = bfsExpand(head, n);
+                    rootComponentEnd = n;
                 }
                 break;
             }
@@ -334,6 +341,10 @@ final class BPGraph implements MarginalResync {
             n = bfsExpand(head, n);
         }
         assert n == nFactors;
+        // no hint, hint off, or the hinted variable bound/absent: the "root
+        // component" is the whole forest, so a consumer of the prefix loses
+        // nothing relative to a full inward sweep
+        if (rootComponentEnd < 0) rootComponentEnd = nFactors;
     }
 
     /** BFS expansion of {@link #computeOrder}: consume order[head..n) and
@@ -409,6 +420,12 @@ final class BPGraph implements MarginalResync {
     /** factors in spanning-forest discovery order */
     int orderAt(int i) {
         return order[i];
+    }
+
+    /** see {@link #rootComponentEnd}: order[0..rootComponentEnd) is the
+     *  preferred root's component, or the whole forest without a hint */
+    int rootComponentEnd() {
+        return rootComponentEnd;
     }
 
     int dynArity(int f) {
@@ -608,7 +625,10 @@ final class BPGraph implements MarginalResync {
      * sweep does, and before the engine reads entropies.
      */
     void normalizeMarginals() {
+        long t0 = System.nanoTime();
         for (int v = 0; v < nVars; v++) varOf[v].normalizeMarginals();
+        BPStats.normalizeNanos += System.nanoTime() - t0;
+        BPStats.normalizeCalls++;
     }
 
     /* ====================================================================== */

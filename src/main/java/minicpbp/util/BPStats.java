@@ -84,6 +84,12 @@ public final class BPStats {
     /** nanoseconds spent building schedules (included in bpNanos) */
     public static long scheduleNanos;
 
+    /* TEMPORARY diagnostic (updateMessagesInPlace phase probe) */
+    public static long phase1Nanos;
+    public static long phase2Nanos;
+    public static long phase3Nanos;
+    public static long msgWrites;
+
     /* warm start: re-establishing b(v) = prod_c local_c(v) at invocation entry */
     /** entry passes run (one per warm invocation) */
     public static long warmEntryRebuilds;
@@ -92,6 +98,38 @@ public final class BPStats {
     /** entry passes that found a variable with no mass left and fell back to a
      *  full cold reset, which is the only invariant-preserving repair */
     public static long warmEntryColdFallbacks;
+
+    /* per-sweep engine work, i.e. everything a sweep costs OUTSIDE the schedule
+     * and outside the factor updates. Before 2026-09-01 none of it was
+     * attributable: it sat in the unnamed remainder of
+     * bpNanos - (phase1+phase2+phase3) - scheduleNanos - warmEntryNanos.
+     * All of these are included in bpNanos. */
+    /** the whole monitor callback, once per sweep: entropy scans, tracing, stop rule */
+    public static long monitorNanos;
+    /** monitor callbacks, i.e. sweeps that reached the callback */
+    public static long monitorCalls;
+    /** problemEntropy(): full scan of the variable stack, |D| logs per unbound
+     *  branching variable. Consumed in every mode by the currentEntropy == 0
+     *  correctness stop */
+    public static long problemEntropyNanos;
+    /** smallestVariableEntropy(): a SECOND full scan recomputing the same
+     *  entropies, read only by the SHIPPED stop rule and computed
+     *  unconditionally (MiniCP.beliefPropaImpl) */
+    public static long smallEntropyNanos;
+    /** nbBranchingVariables(): a third full scan, evaluated eagerly as an
+     *  argument to Log.modelEntropy whose body returns at once when tracing is
+     *  off. Includes the two Log calls themselves */
+    public static long logArgNanos;
+    /** the stop rule: marginalMovement() under CONVERGE, decisionSettled()
+     *  under DECISION, a comparison under SHIPPED, nothing under FIXED */
+    public static long stopRuleNanos;
+    /** normalising every variable's marginal once per sweep: the tail of
+     *  FloodingScheduler.sweep under flood, BPGraph.normalizeMarginals under
+     *  the scheduled arms, which walks the whole graph and not the executed
+     *  prefix */
+    public static long normalizeNanos;
+    /** sweeps that ran that normalisation */
+    public static long normalizeCalls;
 
     /* incremental dirty seeding */
     /** factors seeded dirty at entry, summed over invocations */
@@ -172,6 +210,21 @@ public final class BPStats {
                 + " bpSchedulesReused=" + schedulesReused
                 + " bpMs=" + (bpNanos / 1000000)
                 + " bpScheduleMs=" + (scheduleNanos / 1000000)
+                + " bpPhase1Ms=" + (phase1Nanos / 1000000)
+                + " bpPhase2Ms=" + (phase2Nanos / 1000000)
+                + " bpPhase3Ms=" + (phase3Nanos / 1000000)
+                + " bpMsgWrites=" + msgWrites
+                + " bpMonitorMs=" + (monitorNanos / 1000000)
+                + " bpMonitorCalls=" + monitorCalls
+                + " bpMonitorShare=" + (bpNanos == 0 ? 0.0 : (double) monitorNanos / bpNanos)
+                + " bpMonitorUsPerSweep=" + (monitorCalls == 0 ? 0.0 : monitorNanos / 1000.0 / monitorCalls)
+                + " bpProblemEntropyMs=" + (problemEntropyNanos / 1000000)
+                + " bpSmallEntropyMs=" + (smallEntropyNanos / 1000000)
+                + " bpLogArgMs=" + (logArgNanos / 1000000)
+                + " bpStopRuleMs=" + (stopRuleNanos / 1000000)
+                + " bpNormalizeMs=" + (normalizeNanos / 1000000)
+                + " bpNormalizeShare=" + (bpNanos == 0 ? 0.0 : (double) normalizeNanos / bpNanos)
+                + " bpNormalizeUsPerSweep=" + (normalizeCalls == 0 ? 0.0 : normalizeNanos / 1000.0 / normalizeCalls)
                 + " bpScheduleShare=" + (bpNanos == 0 ? 0.0 : (double) scheduleNanos / bpNanos)
                 + " bpWarmEntryShare=" + (bpNanos == 0 ? 0.0 : (double) warmEntryNanos / bpNanos)
                 + " bpLastFactors=" + lastFactors
