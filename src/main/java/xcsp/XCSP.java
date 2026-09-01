@@ -2525,6 +2525,17 @@ public class XCSP implements XCallbacks2 {
 			search = makeSearch(domWdeg(vars));
 			nbFailCutof = nbFailCutof*vars.length;
 			break;
+		case WDEGRV:
+			// N7 (VALUE_ISOLATION_EXPERIMENT.md, W4): the unbiased value-rule
+			// control. Same variable rule as WDEG and WDEGMXM, same PropaMode.SP
+			// and the same nbFailCutof scaling as WDEG, so the ONLY difference
+			// from the dom-wdeg baseline is xs.randomValue() in place of
+			// xs.min(). Seeded: pass -Dminicpbp.seed or the run is
+			// unreproducible.
+			minicp.setMode(PropaMode.SP);
+			search = makeSearch(domWdegRandomValue(vars));
+			nbFailCutof = nbFailCutof*vars.length;
+			break;
 		case WDEGMXM:
 			// probe O (BP_PROBE_PROTOCOL amendment 11): dom/wdeg variable
 			// selection with max-marginal value selection. BP mode is left ON

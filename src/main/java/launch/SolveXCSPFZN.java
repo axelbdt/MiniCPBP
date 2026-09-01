@@ -31,6 +31,7 @@ public class SolveXCSPFZN {
 		MNEBW, //min-entropy with biased wheel value selection
 		WDEG, //dom-wdeg
 		WDEGMXM, //dom-wdeg variable selection + max-marginal value selection, BP kept ON (probe O, BP_PROBE_PROTOCOL amendment 11)
+		WDEGRV, //dom-wdeg variable selection + uniform random value selection, no BP -- the unbiased value-rule control (N7, VALUE_ISOLATION_EXPERIMENT.md W4)
 		IBS, //impact-based search
 	}
 
@@ -49,6 +50,7 @@ public class SolveXCSPFZN {
 			put("min-entropy-biased", BranchingHeuristic.MNEBW);
 			put("dom-wdeg", BranchingHeuristic.WDEG);
 			put("dom-wdeg-max-marginal", BranchingHeuristic.WDEGMXM);
+			put("dom-wdeg-random-value", BranchingHeuristic.WDEGRV);
 			put("impact-based-search", BranchingHeuristic.IBS);
 		}
 	};

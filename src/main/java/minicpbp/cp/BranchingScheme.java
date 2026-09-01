@@ -981,6 +981,53 @@ public final class BranchingScheme {
     };
 
     /**
+     * dom/wdeg strategy with uniform random value selection.
+     * Identical variable rule to {@link #domWdeg} and
+     * {@link #domWdegMaxMarginalValue} — the same
+     * {@code selectMin(x, size > 1, size/wDeg)} over the same array — so the
+     * three differ in the branched value alone: {@code xs.min()},
+     * {@code xs.valueWithMaxMarginal()}, {@code xs.randomValue()}.
+     * <p>
+     * N7 (VALUE_ISOLATION_EXPERIMENT.md, prediction W4) exists to answer one
+     * objection to that comparison: if the domain minimum happens to be a
+     * pathologically bad value rule on the corpus, the margin credited to
+     * belief-guided value selection is partly the badness of the baseline.
+     * A uniform random value is the standard weak-but-unbiased comparator.
+     * <p>
+     * Seed it with {@code -Dminicpbp.seed}: without that property the solver
+     * RNG is {@code new Random()} and the run cannot be reproduced. Unlike
+     * {@link #domWdeg} this arm therefore needs a seed distribution, not a
+     * single run, before any claim is made about it.
+     *
+     * @param x the variable on which the strategy is applied.
+     * @return a dom/wdeg branching strategy with random value selection
+     * @see Factory#makeDfs(Solver, Supplier)
+     */
+    public static Supplier<Procedure[]> domWdegRandomValue(IntVar... x) {
+        for (IntVar a : x)
+            a.setForBranching(true);
+        return () -> {
+            IntVar xs = selectMin(x,
+                    xi -> xi.size() > 1,
+                    xi -> ((double) xi.size()) / ((double) xi.wDeg()));
+            if (xs == null)
+                return EMPTY;
+            else {
+                int v = xs.randomValue();
+                return branch(
+                        () -> {
+                            Log.branchEqual(xs.getName(), v);
+                            branchEqual(xs, v);
+                        },
+                        () -> {
+                            Log.branchNotEqual(xs.getName(), v);
+                            branchNotEqual(xs, v);
+                        });
+            }
+        };
+    }
+
+    /**
      * dom/wdeg strategy with max marginal value selection.
      * It selects the first unbound variable with a smallest ratio of domain size to weighted degree.
      * Then it creates two branches:
