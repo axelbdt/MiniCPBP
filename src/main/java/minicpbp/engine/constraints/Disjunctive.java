@@ -20,6 +20,7 @@ import minicpbp.cp.Factory;
 import minicpbp.engine.core.AbstractConstraint;
 import minicpbp.engine.core.BoolVar;
 import minicpbp.engine.core.IntVar;
+import minicpbp.util.SchedulingConfig;
 import minicpbp.util.exception.InconsistencyException;
 import minicpbp.util.exception.NotImplementedException;
 
@@ -31,6 +32,14 @@ import static minicpbp.cp.Factory.*;
 /**
  * Disjunctive Scheduling Constraint:
  * Any two pairs of activities cannot overlap in time.
+ * <p>
+ * Beliefs (DISJUNCTIVE_CUMULATIVE_PLAN.md §1.1): the count is delegated to
+ * the internal {@link Cumulative} (all demands 1, capacity 1) posted by the
+ * primary object; this constraint itself emits a silent uniform, and so do
+ * every object the mirror posts. The reified pairwise block in
+ * {@link #post()} is today's posting and stays the default; it is switched
+ * off by {@code -Dminicpbp.sched.disjunctivePairwise=false} so that its
+ * (loopy) beliefs can be separated from the time-indexed count.
  */
 public class Disjunctive extends AbstractConstraint {
 
@@ -51,6 +60,8 @@ public class Disjunctive extends AbstractConstraint {
     private final ThetaTree thetaTree;
 
     private final boolean postMirror;
+    /** whether the internal Cumulative of this object emits the counting belief */
+    private final boolean counting;
     /**
      * Creates a disjunctive constraint that enforces
      * that for any two pair i,j of activities we have
@@ -60,11 +71,11 @@ public class Disjunctive extends AbstractConstraint {
      * @param duration the durations of the activities
      */
     public Disjunctive(IntVar[] start, int[] duration) {
-        this(start, duration, true);
+        this(start, duration, true, true);
     }
 
 
-    private Disjunctive(IntVar[] start, int[] duration, boolean postMirror) {
+    private Disjunctive(IntVar[] start, int[] duration, boolean postMirror, boolean counting) {
         super(start[0].getSolver(), start);
         setName("Disjunctive");
         this.start = start;
@@ -72,6 +83,7 @@ public class Disjunctive extends AbstractConstraint {
         this.end = Factory.makeIntVarArray(start.length, i -> plus(start[i], duration[i]));
 
         this.postMirror = postMirror;
+        this.counting = counting;
         permEst = new Integer[start.length];
         rankEst = new int[start.length];
         permLct = new Integer[start.length];
@@ -100,7 +112,8 @@ public class Disjunctive extends AbstractConstraint {
         for (int i = 0; i < start.length; i++) {
             demands[i] = 1;
         }
-        getSolver().post(new Cumulative(start, duration, demands, 1), false);
+        // the primary object's Cumulative is the one counting object of the whole posting
+        getSolver().post(new Cumulative(start, duration, demands, 1, true, counting), false);
 
 
         for (int i = 0; i < start.length; i++) {
@@ -109,6 +122,7 @@ public class Disjunctive extends AbstractConstraint {
 
 
         if (postMirror) {
+            if (SchedulingConfig.DISJUNCTIVE_PAIRWISE)
             for (int i = 0; i < start.length; i++) {
                 IntVar endi = plus(start[i], duration[i]);
                 for (int j = i + 1; j < start.length; j++) {
@@ -125,10 +139,19 @@ public class Disjunctive extends AbstractConstraint {
 
 
             IntVar[] startMirror = Factory.makeIntVarArray(start.length, i -> minus(end[i]));
-            getSolver().post(new Disjunctive(startMirror, duration, false), false);
+            getSolver().post(new Disjunctive(startMirror, duration, false, false), false);
 
             propagate();
         }
+    }
+
+    @Override
+    public void updateBelief() {
+        if (SchedulingConfig.BELIEF == SchedulingConfig.BeliefRoutine.UNIFORM) {
+            super.updateBelief(); // today's behaviour, warning included
+            return;
+        }
+        resetLocalBelief(); // silent uniform: the count is emitted by the internal Cumulative
     }
 
     @Override
