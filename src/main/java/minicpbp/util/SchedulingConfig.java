@@ -1,0 +1,72 @@
+/*
+ * mini-cpbp, replacing classic propagation by belief propagation
+ *
+ * Experiment configuration for the Disjunctive / Cumulative weighted-counting
+ * experiment (DISJUNCTIVE_CUMULATIVE_PLAN.md, 2026-09-02). Modelled on
+ * BinPackingConfig: everything defaults to the behaviour MiniCPBP had before
+ * the experiment, so an unconfigured run is the pre-experiment solver bit for
+ * bit.
+ *
+ * System properties
+ * -----------------
+ *  minicpbp.sched.belief        uniform | timetable | bp | auto   (default uniform)
+ *                               uniform:   the AbstractConstraint default (control,
+ *                                          today's behaviour)
+ *                               timetable: mean-field product over the residual
+ *                                          capacity profile built from the other
+ *                                          jobs' compulsory parts (brief §4D)
+ *                               bp:        time-indexed nested BP, per-slot
+ *                                          knapsack factors (brief §4A), never
+ *                                          declined on cost
+ *                               auto:      bp when the per-sweep operation count
+ *                                          fits opsBudget, timetable otherwise
+ *  minicpbp.sched.bpIters       nested-BP hard sweep cap (default 5)
+ *  minicpbp.sched.bpEps         stability threshold on the max total-variation
+ *                               change of the solver-facing beliefs between two
+ *                               sweeps (default 0.01; <= 0 disables early exit)
+ *  minicpbp.sched.bpMinSweeps   minimum sweeps before the stability test may
+ *                               fire (default 2; this BP always cold-starts)
+ *  minicpbp.sched.opsBudget     auto only: per-sweep budget on
+ *                               sum_t |A_t| (C+1) over the non-trivial slots
+ *                               (default 2000000)
+ *  minicpbp.sched.disjunctivePairwise  true | false (default true): whether
+ *                               Disjunctive.post() materialises the reified
+ *                               pairwise block (two IsLessOrEqualVar + notEqual
+ *                               per pair). True is today's posting.
+ */
+
+package minicpbp.util;
+
+public final class SchedulingConfig {
+
+    public enum BeliefRoutine {UNIFORM, TIMETABLE, BP, AUTO}
+
+    public static final BeliefRoutine BELIEF;
+    public static final int BP_ITERS;
+    public static final double BP_EPS;
+    public static final int BP_MIN_SWEEPS;
+    public static final long OPS_BUDGET;
+    public static final boolean DISJUNCTIVE_PAIRWISE;
+
+    static {
+        BELIEF = BeliefRoutine.valueOf(System.getProperty("minicpbp.sched.belief", "uniform").toUpperCase());
+        BP_ITERS = Integer.parseInt(System.getProperty("minicpbp.sched.bpIters", "5"));
+        BP_EPS = Double.parseDouble(System.getProperty("minicpbp.sched.bpEps", "0.01"));
+        BP_MIN_SWEEPS = Integer.parseInt(System.getProperty("minicpbp.sched.bpMinSweeps",
+                Integer.toString(CumulativeBP.DEFAULT_MIN_SWEEPS)));
+        OPS_BUDGET = Long.parseLong(System.getProperty("minicpbp.sched.opsBudget", "2000000"));
+        DISJUNCTIVE_PAIRWISE = Boolean.parseBoolean(System.getProperty("minicpbp.sched.disjunctivePairwise", "true"));
+    }
+
+    private SchedulingConfig() {
+    }
+
+    public static String describe() {
+        return "sched.belief=" + BELIEF
+                + " bpIters=" + BP_ITERS
+                + " bpEps=" + BP_EPS
+                + " bpMinSweeps=" + BP_MIN_SWEEPS
+                + " opsBudget=" + OPS_BUDGET
+                + " disjunctivePairwise=" + DISJUNCTIVE_PAIRWISE;
+    }
+}
