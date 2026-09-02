@@ -21,6 +21,11 @@
  *                               auto:      bp when the per-sweep operation count
  *                                          fits opsBudget, timetable otherwise
  *  minicpbp.sched.bpIters       nested-BP hard sweep cap (default 5)
+ *  minicpbp.sched.bpBlock       block width k of the nested BP's capacity
+ *                               factors (default 1 = one factor per time slot,
+ *                               the CumulativeBP engine of the first pilots;
+ *                               k >= 2 uses CumulativeBlockBP, one factor per
+ *                               k consecutive slots). Amendment A3.
  *  minicpbp.sched.bpEps         stability threshold on the max total-variation
  *                               change of the solver-facing beliefs between two
  *                               sweeps (default 0.01; <= 0 disables early exit)
@@ -48,6 +53,8 @@ public final class SchedulingConfig {
 
     public static final BeliefRoutine BELIEF;
     public static final int BP_ITERS;
+    /** amendment A3: block width of the nested BP's factors; 1 is the slot engine. */
+    public static final int BP_BLOCK;
     public static final double BP_EPS;
     public static final int BP_MIN_SWEEPS;
     public static final long OPS_BUDGET;
@@ -62,6 +69,7 @@ public final class SchedulingConfig {
     static {
         BELIEF = BeliefRoutine.valueOf(System.getProperty("minicpbp.sched.belief", "uniform").toUpperCase());
         BP_ITERS = Integer.parseInt(System.getProperty("minicpbp.sched.bpIters", "5"));
+        BP_BLOCK = Integer.parseInt(System.getProperty("minicpbp.sched.bpBlock", "1"));
         BP_EPS = Double.parseDouble(System.getProperty("minicpbp.sched.bpEps", "0.01"));
         BP_MIN_SWEEPS = Integer.parseInt(System.getProperty("minicpbp.sched.bpMinSweeps",
                 Integer.toString(CumulativeBP.DEFAULT_MIN_SWEEPS)));
@@ -76,6 +84,7 @@ public final class SchedulingConfig {
     public static String describe() {
         return "sched.belief=" + BELIEF
                 + " bpIters=" + BP_ITERS
+                + " bpBlock=" + BP_BLOCK
                 + " bpEps=" + BP_EPS
                 + " bpMinSweeps=" + BP_MIN_SWEEPS
                 + " opsBudget=" + OPS_BUDGET

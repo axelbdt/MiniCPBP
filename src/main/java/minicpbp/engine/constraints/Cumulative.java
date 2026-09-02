@@ -21,6 +21,7 @@ import minicpbp.engine.constraints.Profile.Rectangle;
 import minicpbp.engine.core.AbstractConstraint;
 import minicpbp.engine.core.IntVar;
 import minicpbp.util.CumulativeBP;
+import minicpbp.util.CumulativeBlockBP;
 import minicpbp.util.CumulativeTimeTable;
 import minicpbp.util.SchedStats;
 import minicpbp.util.SchedulingConfig;
@@ -61,6 +62,7 @@ public class Cumulative extends AbstractConstraint {
     private double[][] a;
     private double[][] out;
     private CumulativeBP bp;
+    private CumulativeBlockBP blockBp; // amendment A3: used when SchedulingConfig.BP_BLOCK >= 2
     private CumulativeTimeTable timetable;
 
 
@@ -215,16 +217,33 @@ public class Cumulative extends AbstractConstraint {
         SchedulingConfig.BeliefRoutine routine = SchedulingConfig.BELIEF;
         boolean done = false;
         if (routine == SchedulingConfig.BeliefRoutine.BP || routine == SchedulingConfig.BeliefRoutine.AUTO) {
-            if (bp == null) bp = new CumulativeBP();
             long budget = (routine == SchedulingConfig.BeliefRoutine.AUTO) ? SchedulingConfig.OPS_BUDGET : 0L;
-            int status = bp.run(n, dom, domSize, a, duration, demand, capa,
-                    SchedulingConfig.BP_ITERS, SchedulingConfig.BP_EPS, SchedulingConfig.BP_MIN_SWEEPS,
-                    budget, out);
-            if (bp.opsPerSweep() > SchedStats.maxOpsPerSweep) SchedStats.maxOpsPerSweep = bp.opsPerSweep();
+            int status;
+            long ops;
+            int sweepsDone;
+            boolean conv;
+            if (SchedulingConfig.BP_BLOCK >= 2) {
+                if (blockBp == null) blockBp = new CumulativeBlockBP(SchedulingConfig.BP_BLOCK);
+                status = blockBp.run(n, dom, domSize, a, duration, demand, capa,
+                        SchedulingConfig.BP_ITERS, SchedulingConfig.BP_EPS, SchedulingConfig.BP_MIN_SWEEPS,
+                        budget, out);
+                ops = blockBp.opsPerSweep();
+                sweepsDone = blockBp.lastSweeps();
+                conv = blockBp.lastConverged();
+            } else {
+                if (bp == null) bp = new CumulativeBP();
+                status = bp.run(n, dom, domSize, a, duration, demand, capa,
+                        SchedulingConfig.BP_ITERS, SchedulingConfig.BP_EPS, SchedulingConfig.BP_MIN_SWEEPS,
+                        budget, out);
+                ops = bp.opsPerSweep();
+                sweepsDone = bp.lastSweeps();
+                conv = bp.lastConverged();
+            }
+            if (ops > SchedStats.maxOpsPerSweep) SchedStats.maxOpsPerSweep = ops;
             if (status == CumulativeBP.OK) {
                 SchedStats.bpCalls++;
-                SchedStats.bpSweeps += bp.lastSweeps();
-                if (bp.lastConverged()) SchedStats.bpConverged++;
+                SchedStats.bpSweeps += sweepsDone;
+                if (conv) SchedStats.bpConverged++;
                 done = true;
             } else if (status == CumulativeBP.DECLINED) {
                 SchedStats.bpDeclined++;
