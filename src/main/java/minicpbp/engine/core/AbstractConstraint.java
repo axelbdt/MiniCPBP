@@ -219,6 +219,17 @@ public abstract class AbstractConstraint implements Constraint {
         return active.value();
     }
 
+    /** plain field: decided at post time, never trailed */
+    private boolean bpParticipant = true;
+
+    public boolean bpParticipant() {
+        return bpParticipant;
+    }
+
+    public void setBpParticipant(boolean participant) {
+        this.bpParticipant = participant;
+    }
+
     public boolean bpStale() {
         return bpStale.value();
     }

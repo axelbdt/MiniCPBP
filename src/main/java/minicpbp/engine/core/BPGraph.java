@@ -140,7 +140,7 @@ final class BPGraph implements MarginalResync {
         Iterator<Constraint> it = cp.getConstraints().iterator();
         while (it.hasNext()) {
             Constraint c = it.next();
-            if (!c.isActive()) continue;
+            if (!c.isActive() || !c.bpParticipant()) continue;
             int f = nFactors++;
             factor = grow(factor, nFactors);
             scopeStart = grow(scopeStart, nFactors + 1);
@@ -661,7 +661,7 @@ final class BPGraph implements MarginalResync {
         base.resetMarginals();
         for (int j = incStart[v]; j < incStart[v + 1]; j++) {
             Constraint c = factor[incFactor[j]];
-            if (c.isActive()) c.contributeMarginal(base);
+            if (c.isActive() && c.bpParticipant()) c.contributeMarginal(base);
         }
         base.normalizeMarginals();
     }

@@ -103,7 +103,7 @@ final class ResidualScheduler implements BPScheduler {
             int f = pop();
             Constraint c = graph.factorAt(f);
             done++;
-            if (!c.isActive()) continue;
+            if (!c.isActive() || !c.bpParticipant()) continue;
             double residual = c.updateMessagesInPlace(graph);
             BPStats.factorUpdates++;
             if (residual > tol) spread(f);

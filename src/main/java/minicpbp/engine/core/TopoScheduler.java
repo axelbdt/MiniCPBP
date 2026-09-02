@@ -101,7 +101,7 @@ final class TopoScheduler implements BPScheduler {
                 }
                 graph.clean(f);
                 Constraint c = graph.factorAt(f);
-                if (!c.isActive()) continue;
+                if (!c.isActive() || !c.bpParticipant()) continue;
                 double residual = c.updateMessagesInPlace(graph);
                 BPStats.factorUpdates++;
                 if (residual > tol) graph.spreadDirty(f, tol);

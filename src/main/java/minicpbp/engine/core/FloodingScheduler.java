@@ -48,7 +48,7 @@ public final class FloodingScheduler implements BPScheduler {
         Iterator<Constraint> iteratorC = cp.getConstraints().iterator();
         while (iteratorC.hasNext()) {
             c = iteratorC.next();
-            if (c.isActive())
+            if (c.isActive() && c.bpParticipant())
                 c.receiveMessages();
         }
         Iterator<IntVar> iterator = cp.getVariables().iterator();
@@ -58,7 +58,7 @@ public final class FloodingScheduler implements BPScheduler {
         iteratorC = cp.getConstraints().iterator();
         while (iteratorC.hasNext()) {
             c = iteratorC.next();
-            if (c.isActive()) {
+            if (c.isActive() && c.bpParticipant()) {
                 c.sendMessages();
                 BPStats.factorUpdates++;
             }

@@ -689,7 +689,7 @@ public class MiniCP implements Solver {
         Iterator<Constraint> iteratorC = constraints.iterator();
         while (iteratorC.hasNext()) {
             Constraint c = iteratorC.next();
-            if (c.isActive())
+            if (c.isActive() && c.bpParticipant())
                 c.resetLocalBelief();
         }
         if (SCRUB_OUTSIDE_BELIEF) {
@@ -700,7 +700,7 @@ public class MiniCP implements Solver {
             iteratorC = constraints.iterator();
             while (iteratorC.hasNext()) {
                 Constraint c = iteratorC.next();
-                if (c.isActive())
+                if (c.isActive() && c.bpParticipant())
                     c.resetOutsideBelief();
             }
         }
@@ -742,7 +742,7 @@ public class MiniCP implements Solver {
         Iterator<Constraint> iteratorC = constraints.iterator();
         while (iteratorC.hasNext()) {
             Constraint c = iteratorC.next();
-            if (c.isActive())
+            if (c.isActive() && c.bpParticipant())
                 c.contributeMarginals();
         }
         boolean noMass = false;
@@ -917,7 +917,7 @@ public class MiniCP implements Solver {
             Iterator<Constraint> iteratorC = constraints.iterator();
             while (iteratorC.hasNext()) {
                 c = iteratorC.next();
-                if (c.isActive())
+                if (c.isActive() && c.bpParticipant())
                     c.resetLocalBelief();
             }
             prevOutsideBeliefRecorded = false;
@@ -1083,7 +1083,7 @@ public class MiniCP implements Solver {
         Iterator<Constraint> ic = constraints.iterator();
         while (ic.hasNext()) {
             Constraint c = ic.next();
-            if (!c.isActive()) continue;
+            if (!c.isActive() || !c.bpParticipant()) continue;
             IntVar[] scope = c.getScope();
             boolean hasDec = false, hasTouched = false;
             for (int i = 0; i < scope.length; i++) {

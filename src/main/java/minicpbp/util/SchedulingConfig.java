@@ -29,6 +29,11 @@
  *  minicpbp.sched.opsBudget     auto only: per-sweep budget on
  *                               sum_t |A_t| (C+1) over the non-trivial slots
  *                               (default 2000000)
+ *  minicpbp.sched.bpLean        true | false (default false): keep the
+ *                               filtering-only objects of a posting (mirror
+ *                               copies, the Disjunctive objects themselves,
+ *                               the reified pairwise block) out of the BP
+ *                               graph. They still propagate. Amendment A2.
  *  minicpbp.sched.disjunctivePairwise  true | false (default true): whether
  *                               Disjunctive.post() materialises the reified
  *                               pairwise block (two IsLessOrEqualVar + notEqual
@@ -47,6 +52,12 @@ public final class SchedulingConfig {
     public static final int BP_MIN_SWEEPS;
     public static final long OPS_BUDGET;
     public static final boolean DISJUNCTIVE_PAIRWISE;
+    /**
+     * amendment A2: the filtering-only objects of a scheduling posting (the
+     * mirror Cumulative, both Disjunctive objects, the reified pairwise
+     * block when posted) are kept out of the BP graph; they still propagate.
+     */
+    public static final boolean BP_LEAN;
 
     static {
         BELIEF = BeliefRoutine.valueOf(System.getProperty("minicpbp.sched.belief", "uniform").toUpperCase());
@@ -56,6 +67,7 @@ public final class SchedulingConfig {
                 Integer.toString(CumulativeBP.DEFAULT_MIN_SWEEPS)));
         OPS_BUDGET = Long.parseLong(System.getProperty("minicpbp.sched.opsBudget", "2000000"));
         DISJUNCTIVE_PAIRWISE = Boolean.parseBoolean(System.getProperty("minicpbp.sched.disjunctivePairwise", "true"));
+        BP_LEAN = Boolean.parseBoolean(System.getProperty("minicpbp.sched.bpLean", "false"));
     }
 
     private SchedulingConfig() {
@@ -67,6 +79,7 @@ public final class SchedulingConfig {
                 + " bpEps=" + BP_EPS
                 + " bpMinSweeps=" + BP_MIN_SWEEPS
                 + " opsBudget=" + OPS_BUDGET
-                + " disjunctivePairwise=" + DISJUNCTIVE_PAIRWISE;
+                + " disjunctivePairwise=" + DISJUNCTIVE_PAIRWISE
+                + " bpLean=" + BP_LEAN;
     }
 }

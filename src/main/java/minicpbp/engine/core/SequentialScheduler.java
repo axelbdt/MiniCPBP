@@ -44,7 +44,7 @@ final class SequentialScheduler implements BPScheduler {
             boolean backward = alternate && (iter % 2 == 0);
             for (int i = 0; i < n; i++) {
                 Constraint c = graph.factorAt(backward ? n - 1 - i : i);
-                if (!c.isActive()) continue;
+                if (!c.isActive() || !c.bpParticipant()) continue;
                 c.updateMessagesInPlace(graph);
                 BPStats.factorUpdates++;
             }

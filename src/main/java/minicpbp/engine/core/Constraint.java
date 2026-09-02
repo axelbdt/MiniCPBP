@@ -75,6 +75,18 @@ public interface Constraint {
      */
     boolean isActive();
 
+    /**
+     * Whether this constraint is a factor of the belief-propagation graph.
+     * A non-participant still propagates (filters) but never receives or
+     * sends messages and contributes nothing to any marginal; its local
+     * beliefs are never read. Default true. Set at post time, before the
+     * first BP invocation builds the graph (DISJUNCTIVE_CUMULATIVE_PLAN.md
+     * amendment A2: filtering-only copies of a scheduling posting).
+     */
+    boolean bpParticipant();
+
+    void setBpParticipant(boolean participant);
+
     String getName();
     void setName(String name);
 

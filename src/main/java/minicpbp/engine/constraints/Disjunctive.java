@@ -19,6 +19,7 @@ package minicpbp.engine.constraints;
 import minicpbp.cp.Factory;
 import minicpbp.engine.core.AbstractConstraint;
 import minicpbp.engine.core.BoolVar;
+import minicpbp.engine.core.Constraint;
 import minicpbp.engine.core.IntVar;
 import minicpbp.util.SchedulingConfig;
 import minicpbp.util.exception.InconsistencyException;
@@ -102,6 +103,9 @@ public class Disjunctive extends AbstractConstraint {
         startMin = new int[start.length];
         endMax = new int[start.length];
         setExactWCounting(false);
+        // amendment A2: the count is delegated to the internal Cumulative, so
+        // this object (primary or mirror) is filtering-only
+        if (SchedulingConfig.BP_LEAN) setBpParticipant(false);
     }
 
 
@@ -130,9 +134,17 @@ public class Disjunctive extends AbstractConstraint {
                     BoolVar iBeforej = makeBoolVar(getSolver());
                     BoolVar jBeforei = makeBoolVar(getSolver());
 
-                    getSolver().post(new IsLessOrEqualVar(iBeforej, endi, start[j]));
-                    getSolver().post(new IsLessOrEqualVar(jBeforei, endj, start[i]));
-                    getSolver().post(notEqual(iBeforej, jBeforei), false);
+                    Constraint c1 = new IsLessOrEqualVar(iBeforej, endi, start[j]);
+                    Constraint c2 = new IsLessOrEqualVar(jBeforei, endj, start[i]);
+                    Constraint c3 = notEqual(iBeforej, jBeforei);
+                    if (SchedulingConfig.BP_LEAN) { // amendment A2: filtering only
+                        c1.setBpParticipant(false);
+                        c2.setBpParticipant(false);
+                        c3.setBpParticipant(false);
+                    }
+                    getSolver().post(c1);
+                    getSolver().post(c2);
+                    getSolver().post(c3, false);
 
                 }
             }

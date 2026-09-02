@@ -93,6 +93,9 @@ public class Cumulative extends AbstractConstraint {
         this.postMirror = postMirror;
         this.counting = counting;
         setExactWCounting(false);
+        // amendment A2: a copy that never emits a non-uniform belief need not
+        // be a factor of the BP graph at all; it keeps filtering
+        if (!counting && SchedulingConfig.BP_LEAN) setBpParticipant(false);
     }
 
 
