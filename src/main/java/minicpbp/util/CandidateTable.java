@@ -53,6 +53,14 @@ public final class CandidateTable {
     public int[] fixedLoad;     // committed load of fixed jobs, index t − tmin
     public int pMax;            // largest duration over non-inert jobs
 
+    /**
+     * whether a job with a single alive candidate is committed to it (fixed:
+     * its interval enters the fixed profile and it leaves the factor). True
+     * for scheduling; false for the AllDifferent path, where AssignmentBP's
+     * semantics keep such a row in the factor (its lambda saturates at MU_MAX).
+     */
+    public boolean fixSingletons = true;
+
     private int[] base;         // smallest start value per job at build time
     private int[][] idOf;       // idOf[i][v − base[i]] = candidate id, or −1
     private long liveSignature; // changes whenever the live set changes
@@ -140,7 +148,7 @@ public final class CandidateTable {
         nLive = 0;
         nLiveJobs = 0;
         for (int i = 0; i < n; i++) {
-            fixed[i] = size[i] == 1;
+            fixed[i] = fixSingletons && size[i] == 1;
             int[] ids = idOf[i];
             for (int k = 0; k < size[i]; k++) {
                 int off = dom[i][k] - base[i];

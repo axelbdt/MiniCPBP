@@ -51,6 +51,11 @@
  *  minicpbp.sched.mddWarm       reuse the inner messages across calls (default true)
  *  minicpbp.sched.mddForce      use the diagram even where the interval DP
  *                               applies (default false; identity-check arm)
+ *  minicpbp.sched.mddJobState   amendment A4 (default false): job placed /
+ *                               unplaced / maybe state in the diagram, exactly
+ *                               one candidate per job enforced inside R, one
+ *                               direct pass with the outside beliefs as arc
+ *                               weights (no inner loop); mddWidth applies
  *  minicpbp.sched.disjunctivePairwise  true | false (default true): whether
  *                               Disjunctive.post() materialises the reified
  *                               pairwise block (two IsLessOrEqualVar + notEqual
@@ -89,6 +94,13 @@ public final class SchedulingConfig {
     public static final double MDD_EPS;
     public static final boolean MDD_WARM;
     public static final boolean MDD_FORCE;
+    /**
+     * amendment A4 (MDD_COUNTING_PLAN.md §6.4): the diagram carries a placed /
+     * unplaced / maybe state per job and enforces exactly one candidate per
+     * job itself; one direct pass with the outside beliefs as arc weights, no
+     * inner loop. Applies to every posting (Cap 1 included).
+     */
+    public static final boolean MDD_JOB_STATE;
 
     static {
         BELIEF = BeliefRoutine.valueOf(System.getProperty("minicpbp.sched.belief", "uniform").toUpperCase());
@@ -105,6 +117,7 @@ public final class SchedulingConfig {
         MDD_EPS = Double.parseDouble(System.getProperty("minicpbp.sched.mddEps", "0.01"));
         MDD_WARM = Boolean.parseBoolean(System.getProperty("minicpbp.sched.mddWarm", "true"));
         MDD_FORCE = Boolean.parseBoolean(System.getProperty("minicpbp.sched.mddForce", "false"));
+        MDD_JOB_STATE = Boolean.parseBoolean(System.getProperty("minicpbp.sched.mddJobState", "false"));
     }
 
     private SchedulingConfig() {
@@ -123,6 +136,7 @@ public final class SchedulingConfig {
                 + " mddIters=" + MDD_ITERS
                 + " mddEps=" + MDD_EPS
                 + " mddWarm=" + MDD_WARM
-                + " mddForce=" + MDD_FORCE;
+                + " mddForce=" + MDD_FORCE
+                + " mddJobState=" + MDD_JOB_STATE;
     }
 }

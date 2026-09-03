@@ -74,6 +74,7 @@ public class Cumulative extends AbstractConstraint {
     private ExactlyOneRows rows;
     private PackingFactor packing;
     private boolean packingIsInterval;
+    private double[] logMsg; // amendment A4: direct log messages by candidate id
 
 
     /**
@@ -300,12 +301,15 @@ public class Cumulative extends AbstractConstraint {
             table.refresh(dom, domSize, a);
             boolean unit = capa == 1;
             for (int i = 0; i < n && unit; i++) if (demand[i] != 1 && duration[i] > 0) unit = false;
-            packingIsInterval = unit && !SchedulingConfig.MDD_FORCE;
-            packing = packingIsInterval ? new IntervalPackingDP() : new ResourceMDD(SchedulingConfig.MDD_WIDTH);
+            packingIsInterval = unit && !SchedulingConfig.MDD_FORCE && !SchedulingConfig.MDD_JOB_STATE;
+            packing = packingIsInterval ? new IntervalPackingDP()
+                    : new ResourceMDD(SchedulingConfig.MDD_WIDTH, SchedulingConfig.MDD_JOB_STATE);
             if (rows == null) rows = new ExactlyOneRows();
             rows.invalidate();
+            if (SchedulingConfig.MDD_JOB_STATE && (logMsg == null || logMsg.length < table.M)) logMsg = new double[table.M];
         }
         SchedStats.mddLiveSum += table.nLive;
+        if (SchedulingConfig.MDD_JOB_STATE) return updateBeliefJobState(n);
         if (table.nLiveJobs >= 2) {
             rows.run(table, packing, SchedulingConfig.MDD_ITERS, SchedulingConfig.MDD_EPS, 1,
                     SchedulingConfig.MDD_WARM, 1.0);
@@ -338,6 +342,47 @@ public class Cumulative extends AbstractConstraint {
             for (int c = table.jobBegin[i]; c < table.jobEnd[i]; c++) {
                 if (!table.alive[c]) continue;
                 out[i][table.slot[c]] = table.live[c] ? (table.nLiveJobs >= 2 ? r[c] : 1.0) : 0.0;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Amendment A4: one direct pass on the job-state diagram, outside beliefs
+     * as arc weights, log cavity messages back; emitted per row after a shift
+     * by the row maximum.
+     */
+    private boolean updateBeliefJobState(int n) {
+        ResourceMDD mdd = (ResourceMDD) packing;
+        if (table.nLiveJobs >= 1) {
+            if (!mdd.updateDirect(table, table.weight, logMsg)) {
+                if (mdd.lastDeclined()) SchedStats.mddDeclined++;
+                else SchedStats.mddNumericalFallbacks++;
+                return false;
+            }
+            SchedStats.mddSweeps++;
+            if (mdd.lastWidth() > SchedStats.mddWidthMax) SchedStats.mddWidthMax = mdd.lastWidth();
+            if (mdd.lastWidthBeforeMerge() > SchedStats.mddWidthBeforeMergeMax)
+                SchedStats.mddWidthBeforeMergeMax = mdd.lastWidthBeforeMerge();
+            SchedStats.mddWidthSum += mdd.lastWidth();
+            if (mdd.lastRelaxed()) SchedStats.mddRelaxed++;
+        }
+        SchedStats.mddCalls++;
+        for (int i = 0; i < n; i++) {
+            if (start[i].isBound()) continue;
+            if (table.inert[i]) {
+                java.util.Arrays.fill(out[i], 0, domSize[i], 1.0);
+                continue;
+            }
+            double mx = Double.NEGATIVE_INFINITY;
+            for (int c = table.jobBegin[i]; c < table.jobEnd[i]; c++)
+                if (table.live[c] && logMsg[c] > mx) mx = logMsg[c];
+            for (int c = table.jobBegin[i]; c < table.jobEnd[i]; c++) {
+                if (!table.alive[c]) continue;
+                double v = 0.0;
+                if (table.live[c] && mx > Double.NEGATIVE_INFINITY && logMsg[c] > Double.NEGATIVE_INFINITY)
+                    v = Math.max(Math.exp(logMsg[c] - mx), Double.MIN_NORMAL);
+                out[i][table.slot[c]] = v;
             }
         }
         return true;

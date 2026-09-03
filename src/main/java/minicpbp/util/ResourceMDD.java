@@ -40,6 +40,18 @@ package minicpbp.util;
  * arc in the layer gives r = 0 (structural zero); a feasible arc whose mass
  * underflowed keeps {@code Double.MIN_NORMAL}.
  *
+ * <p>Job state (amendment A4, MDD_COUNTING_PLAN.md §6.4; {@code jobState}):
+ * the state additionally records, for every job, whether it has been placed
+ * (no / yes / maybe — "maybe" only arises from a relaxed merge). z = 1 is
+ * forbidden once the job is placed, and at the job's last layer a node in
+ * which the job is certainly unplaced loses its z = 0 arc, so the diagram
+ * accepts exactly one candidate per job: the exactly-one factors E_i live
+ * inside R and no inner loop is needed. {@link #updateDirect} then runs one
+ * pass with the outside beliefs as arc weights and returns the cavity
+ * message m_a = Σ_{z=1 arcs of a} alpha(u) beta(u') — exact at exact width
+ * (identity (e) in exp.PackingCheck), a relaxation otherwise. The busy
+ * segment is dropped in this mode (placed subsumes it).
+ *
  * <p>Cost O(M · W) per pass, plus the state hashing during the build. Rebuilt
  * from scratch at every update in this version (brief §3.5: acceptable as a
  * first correct version). Scratch memory is reused and grows monotonically.
@@ -50,6 +62,10 @@ public final class ResourceMDD implements PackingFactor {
     public static final int EXACT_SAFETY_WIDTH = 1 << 16;
 
     private final int width; // 0 = exact
+    private final boolean jobState; // amendment A4: placed / unplaced / maybe per job inside the state
+    private int nPlacedWords, placedOff;    // 2-bit fields, 16 per int, after the busy segment
+    private int[] lastLayerOfJob = new int[0];
+    private static final int P_NO = 0, P_YES = 1, P_MAYBE = 2;
 
     // per-call structure
     private int[] order = new int[0];          // live candidates in layer order
@@ -58,6 +74,7 @@ public final class ResourceMDD implements PackingFactor {
     private int[] layerStart = new int[0];     // node offset of each layer (m + 2 entries)
     private int[] child0 = new int[0], child1 = new int[0];
     private double[] alpha = new double[0], beta = new double[0];
+    private double[] logScaleAlpha = new double[0], logScaleBeta = new double[0];
     private int[] curState = new int[0], nxtState = new int[0];
     private int[] table = new int[0];          // open addressing: node index + 1, 0 = empty
     private int[] sortIdx = new int[0];
@@ -73,13 +90,46 @@ public final class ResourceMDD implements PackingFactor {
     private long nbCalls, nbRelaxedCalls, nbDeclined, sumWidth;
 
     public ResourceMDD(int width) {
+        this(width, false);
+    }
+
+    public ResourceMDD(int width, boolean jobState) {
         this.width = width;
+        this.jobState = jobState;
     }
 
     @Override
     public String name() {
-        return width == 0 ? "mdd-exact" : "mdd-w" + width;
+        return (width == 0 ? "mdd-exact" : "mdd-w" + width) + (jobState ? "-job" : "");
     }
+
+    private int placedGet(int[] st, int so, int i) {
+        return (st[so + placedOff + (i >> 4)] >>> ((i & 15) << 1)) & 3;
+    }
+
+    private static void placedSet(int[] st, int so, int placedOff, int i, int v) {
+        int idx = so + placedOff + (i >> 4), sh = (i & 15) << 1;
+        st[idx] = (st[idx] & ~(3 << sh)) | (v << sh);
+    }
+
+    /**
+     * Amendment A4: one direct pass with the outside beliefs as arc weights on
+     * a job-state diagram; writes the log cavity message log m_a (not a ratio;
+     * −∞ when infeasible) for every live candidate. Requires {@code jobState}.
+     *
+     * @return false on decline (safety width) or numerical failure
+     */
+    public boolean updateDirect(CandidateTable t, double[] weight, double[] msg) {
+        if (!jobState) throw new IllegalStateException("updateDirect needs jobState");
+        direct = true;
+        try {
+            return update(t, weight, msg);
+        } finally {
+            direct = false;
+        }
+    }
+
+    private boolean direct;
 
     @Override
     public int lastWidth() {
@@ -147,16 +197,26 @@ public final class ResourceMDD implements PackingFactor {
         smallIdx = grow(smallIdx, t.n);
         nSmall = 0;
         for (int i = 0; i < t.n; i++) {
-            smallIdx[i] = (!t.inert[i] && 2 * t.d[i] <= t.cap) ? nSmall++ : -1;
+            smallIdx[i] = (!jobState && !t.inert[i] && 2 * t.d[i] <= t.cap) ? nSmall++ : -1;
         }
-        stateLen = pMax + nSmall;
+        placedOff = pMax + nSmall;
+        nPlacedWords = jobState ? (t.n + 15) >> 4 : 0;
+        stateLen = pMax + nSmall + nPlacedWords;
         layerStart = grow(layerStart, m + 2);
+        if (jobState) {
+            lastLayerOfJob = grow(lastLayerOfJob, t.n);
+            java.util.Arrays.fill(lastLayerOfJob, 0, t.n, -1);
+            for (int L = 0; L < m; L++) lastLayerOfJob[t.job[order[L]]] = L;
+        }
         int cap = t.cap;
         int[] fixedLoad = t.fixedLoad;
         int tmin = t.tmin;
         // ---- root ----
         int nodes = 0;
         layerStart[0] = 0;
+        logScaleAlpha = grow(logScaleAlpha, m + 2);
+        logScaleBeta = grow(logScaleBeta, m + 2);
+        logScaleAlpha[0] = 0.0;
         curState = grow(curState, stateLen);
         java.util.Arrays.fill(curState, 0, stateLen, 0);
         alpha = grow(alpha, 1);
@@ -170,6 +230,8 @@ public final class ResourceMDD implements PackingFactor {
             int p = t.p[t.job[a]];
             int d = t.dem[a];
             int si = smallIdx[t.job[a]];
+            int ji = t.job[a];
+            boolean lastOfJob = jobState && lastLayerOfJob[ji] == L;
             double lam = lambda[a];
             boolean terminal = (L + 1 == m);
             int shift = terminal ? Integer.MAX_VALUE : t.start[order[L + 1]] - s;
@@ -182,10 +244,13 @@ public final class ResourceMDD implements PackingFactor {
             int nxtBase = curBase + curCount;
             int nxtCount = 0;
             if (terminal) {
+                logScaleAlpha[L + 1] = logScaleAlpha[L];
                 // everything flows into one terminal node; states are irrelevant
                 for (int u = 0; u < curCount; u++) {
-                    child0[curBase + u] = nxtBase;
-                    child1[curBase + u] = feasible(t, curState, u * stateLen, s, p, d, si, cap, fixedLoad, tmin) ? nxtBase : -1;
+                    int so = u * stateLen;
+                    boolean unplaced = lastOfJob && placedGet(curState, so, ji) == P_NO;
+                    child0[curBase + u] = unplaced ? -1 : nxtBase;
+                    child1[curBase + u] = feasible(t, curState, so, s, p, d, si, ji, cap, fixedLoad, tmin) ? nxtBase : -1;
                 }
                 alpha[nxtBase] = 1.0;
                 nxtCount = 1;
@@ -200,20 +265,25 @@ public final class ResourceMDD implements PackingFactor {
                 for (int u = 0; u < curCount; u++) {
                     int so = u * stateLen;
                     double au = alpha[curBase + u];
-                    // z = 0: shift
-                    shifted(curState, so, scratch, shift);
-                    int c0 = findOrInsert(scratch, nxtCount, mask);
-                    if (c0 == nxtCount) {
-                        alpha[nxtBase + nxtCount] = 0.0;
-                        nxtCount++;
+                    // z = 0: shift (A4: forbidden at the job's last layer when the job is certainly unplaced)
+                    if (lastOfJob && placedGet(curState, so, ji) == P_NO) {
+                        child0[curBase + u] = -1;
+                    } else {
+                        shifted(curState, so, scratch, shift);
+                        int c0 = findOrInsert(scratch, nxtCount, mask);
+                        if (c0 == nxtCount) {
+                            alpha[nxtBase + nxtCount] = 0.0;
+                            nxtCount++;
+                        }
+                        alpha[nxtBase + c0] += au;
+                        child0[curBase + u] = nxtBase + c0;
                     }
-                    alpha[nxtBase + c0] += au;
-                    child0[curBase + u] = nxtBase + c0;
                     // z = 1
-                    if (feasible(t, curState, so, s, p, d, si, cap, fixedLoad, tmin)) {
+                    if (feasible(t, curState, so, s, p, d, si, ji, cap, fixedLoad, tmin)) {
                         System.arraycopy(curState, so, scratch, 0, stateLen);
                         for (int q = 0; q < p; q++) scratch[q] += d;
                         if (si >= 0) scratch[pMax + si] = p;
+                        if (jobState) placedSet(scratch, 0, placedOff, ji, P_YES);
                         shifted(scratch, 0, scratch, shift);
                         int c1 = findOrInsert(scratch, nxtCount, mask);
                         if (c1 == nxtCount) {
@@ -237,12 +307,14 @@ public final class ResourceMDD implements PackingFactor {
                     nxtCount = merge(curBase, curCount, nxtBase, nxtCount);
                     lastRelaxed = true;
                 }
-                // rescale alpha of the new layer
+                // rescale alpha of the new layer, remembering the cumulative scale
                 double mx = 0.0;
                 for (int v = 0; v < nxtCount; v++) if (alpha[nxtBase + v] > mx) mx = alpha[nxtBase + v];
+                logScaleAlpha[L + 1] = logScaleAlpha[L];
                 if (mx > 0.0 && mx != 1.0) {
                     double inv = 1.0 / mx;
                     for (int v = 0; v < nxtCount; v++) alpha[nxtBase + v] *= inv;
+                    logScaleAlpha[L + 1] += Math.log(mx);
                 }
             }
             if (nxtCount > lastWidth) lastWidth = nxtCount;
@@ -260,21 +332,25 @@ public final class ResourceMDD implements PackingFactor {
         // ---- backward ----
         beta = grow(beta, nodes);
         beta[layerStart[m]] = 1.0; // terminal
+        logScaleBeta[m] = 0.0;
         for (int L = m - 1; L >= 0; L--) {
             int a = order[L];
             double lam = lambda[a];
             int b = layerStart[L], e = layerStart[L + 1];
             double mx = 0.0;
             for (int u = b; u < e; u++) {
-                double v = beta[child0[u]];
+                int c0 = child0[u];
+                double v = (c0 >= 0) ? beta[c0] : 0.0;
                 int c1 = child1[u];
                 if (c1 >= 0) v += lam * beta[c1];
                 beta[u] = v;
                 if (v > mx) mx = v;
             }
+            logScaleBeta[L] = logScaleBeta[L + 1];
             if (mx > 0.0 && mx != 1.0) {
                 double inv = 1.0 / mx;
                 for (int u = b; u < e; u++) beta[u] *= inv;
+                logScaleBeta[L] += Math.log(mx);
             }
         }
         // ---- messages ----
@@ -285,7 +361,8 @@ public final class ResourceMDD implements PackingFactor {
             boolean anyArc = false;
             for (int u = b; u < e; u++) {
                 double au = alpha[u];
-                m0 += au * beta[child0[u]];
+                int c0 = child0[u];
+                if (c0 >= 0) m0 += au * beta[c0];
                 int c1 = child1[u];
                 if (c1 >= 0) {
                     anyArc = true;
@@ -293,7 +370,14 @@ public final class ResourceMDD implements PackingFactor {
                 }
             }
             double rv;
-            if (!anyArc) rv = 0.0;
+            if (direct) {
+                // A4: the LOG of the cavity message itself. The candidates of one job sit on
+                // different layers, so the per-layer rescaling is undone through the cumulative
+                // log scales; the caller shifts per row and exponentiates.
+                rv = (!anyArc || m1 <= 0.0) ? Double.NEGATIVE_INFINITY
+                        : Math.log(m1) + logScaleAlpha[L] + logScaleBeta[L + 1];
+                if (Double.isNaN(rv)) return false;
+            } else if (!anyArc) rv = 0.0;
             else if (m0 > 0.0) {
                 rv = m1 / m0;
                 if (Double.isNaN(rv)) return false;
@@ -305,8 +389,9 @@ public final class ResourceMDD implements PackingFactor {
         return true;
     }
 
-    private boolean feasible(CandidateTable t, int[] st, int so, int s, int p, int d, int si, int cap, int[] fixedLoad, int tmin) {
+    private boolean feasible(CandidateTable t, int[] st, int so, int s, int p, int d, int si, int ji, int cap, int[] fixedLoad, int tmin) {
         if (si >= 0 && st[so + pMax + si] > 0) return false;
+        if (jobState && placedGet(st, so, ji) == P_YES) return false;
         for (int q = 0; q < p; q++) {
             if (st[so + q] + d + fixedLoad[s + q - tmin] > cap) return false;
         }
@@ -325,6 +410,7 @@ public final class ResourceMDD implements PackingFactor {
             int v = src[so + pMax + j] - shift;
             dst[pMax + j] = v > 0 ? v : 0;
         }
+        for (int j = 0; j < nPlacedWords; j++) dst[placedOff + j] = src[so + placedOff + j];
     }
 
     private int hash(int[] st, int so) {
@@ -384,19 +470,43 @@ public final class ResourceMDD implements PackingFactor {
             newAlpha[k] = alpha[nxtBase + v];
             remap[v] = k;
         }
+        int[] yesW = jobState ? new int[nPlacedWords] : null, noW = jobState ? new int[nPlacedWords] : null;
         for (int k = keep; k < nxtCount; k++) {
             int v = sortIdx[k];
             int so = v * stateLen;
-            for (int q = 0; q < stateLen; q++) if (nxtState[so + q] < mergedState[q]) mergedState[q] = nxtState[so + q];
+            for (int q = 0; q < placedOff; q++) if (nxtState[so + q] < mergedState[q]) mergedState[q] = nxtState[so + q];
+            if (jobState) {
+                for (int wq = 0; wq < nPlacedWords; wq++) {
+                    int word = nxtState[so + placedOff + wq];
+                    for (int f = 0; f < 16; f++) {
+                        int val = (word >>> (f << 1)) & 3;
+                        if (val == P_YES) yesW[wq] |= 1 << f;
+                        else if (val == P_NO) noW[wq] |= 1 << f;
+                        else { yesW[wq] |= 1 << f; noW[wq] |= 1 << f; }
+                    }
+                }
+            }
             mergedAlpha += alpha[nxtBase + v];
             remap[v] = keep;
+        }
+        if (jobState) {
+            // yes on every merged node -> yes; no on every one -> no; otherwise maybe (relaxation)
+            for (int wq = 0; wq < nPlacedWords; wq++) {
+                int word = 0;
+                for (int f = 0; f < 16; f++) {
+                    boolean y = (yesW[wq] >>> f & 1) == 1, nn = (noW[wq] >>> f & 1) == 1;
+                    int val = (y && nn) ? P_MAYBE : (y ? P_YES : P_NO);
+                    word |= val << (f << 1);
+                }
+                mergedState[placedOff + wq] = word;
+            }
         }
         System.arraycopy(mergedState, 0, newStates, keep * stateLen, stateLen);
         newAlpha[keep] = mergedAlpha;
         System.arraycopy(newStates, 0, nxtState, 0, (keep + 1) * stateLen);
         System.arraycopy(newAlpha, 0, alpha, nxtBase, keep + 1);
         for (int u = curBase; u < curBase + curCount; u++) {
-            child0[u] = nxtBase + remap[child0[u] - nxtBase];
+            if (child0[u] >= 0) child0[u] = nxtBase + remap[child0[u] - nxtBase];
             if (child1[u] >= 0) child1[u] = nxtBase + remap[child1[u] - nxtBase];
         }
         return keep + 1;

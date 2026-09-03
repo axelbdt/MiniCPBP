@@ -11,6 +11,15 @@
  * Added 2026-08-16 for the "BP marginals vs. Soules U^3" experiment
  * (see IMPLEMENTATION_LOG.md, 2026-08-16, phase 2).
  *
+ * Since 2026-09-03 (MDD_COUNTING_PLAN.md §1.1) this class is a thin adapter
+ * over the shared kernel: the exactly-one rows are ExactlyOneRows, the
+ * at-most-one columns are AtMostOnePerColumn, over a CandidateTable whose
+ * candidates are the positive edges of A in row-major order. The arithmetic,
+ * its order, the guards and the constants are those of the previous inline
+ * implementation, and exp.PackingCheck ("delegation") asserts that the two
+ * agree to the last bit iterate by iterate against the frozen copy
+ * exp.AssignmentBPLegacy.
+ *
  * Model
  * -----
  * Rows i in [0,m) are the free variables of an alldifferent constraint,
@@ -49,22 +58,9 @@
  * Stop criterion (2026-08-24)
  * ---------------------------
  * A hard cap of maxIters sweeps, with early stopping on the stability of the
- * SOLVER-FACING beliefs rather than of the raw messages. After sweep t,
- *
- *     p_i^{(t)}(v) = theta_i(v) m_i^{(t)}(v) / sum_u theta_i(u) m_i^{(t)}(u)
- *
- * with theta_i(v) = A[i][v] the outside belief and m_i^{(t)}(v) = nu_{v->i}
- * the cavity message, i.e. exactly the distribution AbstractConstraint's
- * row normalisation hands to the solver. With
- *
- *     TV(p, q) = 1/2 sum_v |p(v) - q(v)|,
- *     R_t      = max_i TV(p_i^{(t)}, p_i^{(t-1)}),
- *
- * the iteration stops once R_t &lt;= eps, subject to a minimum sweep count
- * (2 from a cold start, 1 from a warm start; p^{(0)} is read off the
- * starting messages, which are nu = 1 when cold). This asks whether another
- * sweep would materially move the beliefs the solver uses, not whether the
- * messages have reached a numerical fixed point.
+ * SOLVER-FACING beliefs rather than of the raw messages (ExactlyOneRows):
+ * R_t = max_i TV(p_i^{(t)}, p_i^{(t-1)}) with p_i(v) = A_iv nu_vi / sum, stop
+ * once R_t <= eps after a minimum sweep count (2 cold, 1 warm).
  */
 
 package minicpbp.util;
@@ -72,24 +68,21 @@ package minicpbp.util;
 public final class AssignmentBP {
 
     /** Largest value a mu message is allowed to take (avoids overflow). */
-    private static final double MU_MAX = 1e12;
-    /** Relative threshold below which a leave-one-out difference is recomputed. */
-    private static final double CANCEL_REL = 1e-10;
+    private static final double MU_MAX = ExactlyOneRows.MU_MAX;
     /** Default minimum number of sweeps before the stability test may fire. */
     public static final int DEFAULT_MIN_SWEEPS_COLD = 2;
     public static final int DEFAULT_MIN_SWEEPS_WARM = 1;
 
-    // CSR edge list, row major
-    private int[] rowStart;
-    private int[] colIdx;
-    private double[] a;      // A[i][j] for the edge
-    private double[] mu;
-    private double[] nu;
-    private double[] p;      // p_i(j) of the previous sweep, edge indexed
-    private double[] rowAcc; // R_i  = sum_j A[i][j] nu_{j->i}
-    private double[] colAcc; // C_j  = sum_i mu_{i->j}
+    private final ExactlyOneRows rows = new ExactlyOneRows();
+    private final AtMostOnePerColumn columns = new AtMostOnePerColumn();
+    private CandidateTable table;
+
+    // table inputs, reused across calls
+    private int[][] dom = new int[0][];
+    private int[] size = new int[0];
+    private double[][] w = new double[0][];
+    private int[] ones = new int[0];
     private int nbEdges;
-    private int m, n;
 
     // warm start bookkeeping
     private long signature = Long.MIN_VALUE;
@@ -97,58 +90,32 @@ public final class AssignmentBP {
 
     // instrumentation
     private long nbCalls;
-    private long nbIterations;
     private long nbConverged;
-    private long nbCancelRecomputes;
-    private long nbClamps;
-    private long nbNonFinite;
     private int lastIterations;
     private boolean lastConverged;
+    private long prevKernelSweeps, prevKernelCancel, prevColCancel, prevKernelClamps, prevColNonFinite;
+    private long nbIterations, nbCancelRecomputes, nbClamps, nbNonFinite;
 
     public AssignmentBP(int maxM, int maxN) {
-        rowStart = new int[maxM + 1];
-        int cap = Math.max(16, maxM * maxN);
-        colIdx = new int[cap];
-        a = new double[cap];
-        mu = new double[cap];
-        nu = new double[cap];
-        p = new double[cap];
-        rowAcc = new double[maxM];
-        colAcc = new double[maxN];
+        ensureRows(maxM, maxN);
     }
 
-    private void ensureEdgeCapacity(int cap) {
-        if (colIdx.length >= cap) return;
-        colIdx = new int[cap];
-        a = new double[cap];
-        mu = new double[cap];
-        nu = new double[cap];
-        p = new double[cap];
-        haveWarmStart = false;
-    }
-
-    /**
-     * R_t = max_i TV(p_i^{(t)}, p_i^{(t-1)}) over the solver-facing beliefs
-     * p_i(j) = A_ij nu_ji / sum_j' A_ij' nu_j'i, overwriting prev with
-     * p^{(t)}. Called once before the first sweep to seed prev, its result
-     * then being meaningless and discarded.
-     */
-    private double beliefChange(double[] prev) {
-        double maxTv = 0.0;
-        for (int i = 0; i < m; i++) {
-            int s = rowStart[i], t = rowStart[i + 1];
-            double z = 0.0;
-            for (int k = s; k < t; k++) z += a[k] * nu[k];
-            double tv = 0.0;
-            for (int k = s; k < t; k++) {
-                double pk = (z > 0.0) ? a[k] * nu[k] / z : 0.0;
-                tv += Math.abs(pk - prev[k]);
-                prev[k] = pk;
-            }
-            tv *= 0.5;
-            if (tv > maxTv) maxTv = tv;
+    private void ensureRows(int m, int n) {
+        if (dom.length < m) {
+            dom = new int[m][];
+            w = new double[m][];
+            size = new int[m];
         }
-        return maxTv;
+        for (int i = 0; i < m; i++) {
+            if (dom[i] == null || dom[i].length < n) {
+                dom[i] = new int[n];
+                w[i] = new double[n];
+            }
+        }
+        if (ones.length < m) {
+            ones = new int[m];
+            java.util.Arrays.fill(ones, 1);
+        }
     }
 
     /**
@@ -175,128 +142,62 @@ public final class AssignmentBP {
      */
     public boolean run(double[][] A, int m, int n, int maxIters, double eps,
                        int minCold, int minWarm, double[][] out) {
-        this.m = m;
-        this.n = n;
         nbCalls++;
-
-        // ---- build the sparse edge list and its signature -------------
-        int cap = 0;
-        for (int i = 0; i < m; i++)
-            for (int j = 0; j < n; j++) if (A[i][j] > 0.0) cap++;
-        ensureEdgeCapacity(Math.max(cap, 1));
-
+        ensureRows(m, n);
+        // ---- the positive edges, row-major, and their signature -------
         long sig = 1469598103934665603L;
         sig = sig * 1099511628211L + m;
         sig = sig * 1099511628211L + n;
         int e = 0;
         for (int i = 0; i < m; i++) {
-            rowStart[i] = e;
             double[] Ai = A[i];
+            int s = 0;
             for (int j = 0; j < n; j++) {
                 if (Ai[j] > 0.0) {
-                    colIdx[e] = j;
-                    a[e] = Ai[j];
-                    e++;
+                    dom[i][s] = j;
+                    w[i][s] = Ai[j];
+                    s++;
                     sig = sig * 1099511628211L + (i * 131L + j);
                 }
             }
+            size[i] = s;
+            e += s;
         }
-        rowStart[m] = e;
         nbEdges = e;
-
-
         boolean warm = haveWarmStart && sig == signature;
+        if (!warm || table == null) {
+            // the edge set changed: candidate ids change, so the table is rebuilt and the
+            // messages restart from nu = 1 (exactly the previous behaviour)
+            table = new CandidateTable(m, dom, size, ones, ones, 1);
+            table.fixSingletons = false;
+            rows.invalidate();
+        }
         signature = sig;
         haveWarmStart = true;
-        if (!warm) {
-            for (int k = 0; k < nbEdges; k++) nu[k] = 1.0;
-        }
+        table.refresh(dom, size, w);
         int minSweeps = Math.max(1, warm ? minWarm : minCold);
 
-        // ---- iterate ---------------------------------------------------
-        beliefChange(p); // p^{(0)}, read off the starting messages
-        boolean converged = false;
-        int iter = 0;
-        for (; iter < maxIters; iter++) {
-            // row pass: mu_{i->j} = A_ij / (R_i - A_ij nu_ji)
-            for (int i = 0; i < m; i++) {
-                double acc = 0.0;
-                for (int k = rowStart[i]; k < rowStart[i + 1]; k++) acc += a[k] * nu[k];
-                rowAcc[i] = acc;
-            }
-            for (int i = 0; i < m; i++) {
-                double R = rowAcc[i];
-                int s = rowStart[i], t = rowStart[i + 1];
-                for (int k = s; k < t; k++) {
-                    double own = a[k] * nu[k];
-                    double den = R - own;
-                    if (!(den > CANCEL_REL * R)) {
-                        // catastrophic cancellation or genuinely tiny: recompute
-                        nbCancelRecomputes++;
-                        den = 0.0;
-                        for (int q = s; q < t; q++) if (q != k) den += a[q] * nu[q];
-                    }
-                    double v;
-                    if (den <= 0.0) {
-                        v = MU_MAX;
-                        nbClamps++;
-                    } else {
-                        v = a[k] / den;
-                        if (!(v <= MU_MAX)) {
-                            v = MU_MAX;
-                            nbClamps++;
-                        }
-                    }
-                    mu[k] = v;
-                }
-            }
-            // column pass: nu_{j->i} = 1 / (1 + C_j - mu_ij)
-            java.util.Arrays.fill(colAcc, 0, n, 0.0);
-            for (int k = 0; k < nbEdges; k++) colAcc[colIdx[k]] += mu[k];
-            for (int i = 0; i < m; i++) {
-                for (int k = rowStart[i]; k < rowStart[i + 1]; k++) {
-                    int j = colIdx[k];
-                    double C = colAcc[j];
-                    // Leave-one-out by subtraction, rescanning the column only
-                    // when the difference is not trustworthy. The rescan is
-                    // frequent (mostly degree-1 columns, where the difference
-                    // is exactly zero) but cheap; indexing the edges by column
-                    // to avoid it was measured 3-7% SLOWER on both real and
-                    // synthetic matrices, so the simple scan is kept.
-                    double rest = C - mu[k];
-                    if (!(rest >= CANCEL_REL * C) && C > 0.0) {
-                        nbCancelRecomputes++;
-                        rest = 0.0;
-                        for (int q = 0; q < nbEdges; q++)
-                            if (colIdx[q] == j && q != k) rest += mu[q];
-                    }
-                    if (rest < 0.0) rest = 0.0;
-                    double newNu = 1.0 / (1.0 + rest);
-                    if (!(newNu > 0.0) || Double.isNaN(newNu) || Double.isInfinite(newNu)) {
-                        nbNonFinite++;
-                        newNu = Double.MIN_NORMAL;
-                    }
-                    nu[k] = newNu;
-                }
-            }
-            nbIterations++;
-            // stability of the solver-facing beliefs, not of the messages
-            double R = beliefChange(p);
-            if (eps > 0.0 && iter + 1 >= minSweeps && R <= eps) {
-                converged = true;
-                iter++;
-                break;
-            }
-        }
-        lastIterations = iter;
+        boolean converged = rows.run(table, columns, maxIters, eps, minSweeps, warm, 1.0);
+        int it = rows.lastSweeps();
+        lastIterations = it;
         lastConverged = converged;
         if (converged) nbConverged++;
+        nbIterations += rows.nbSweeps() - prevKernelSweeps;
+        prevKernelSweeps = rows.nbSweeps();
+        nbCancelRecomputes += (rows.nbCancelRecomputes() - prevKernelCancel) + (columns.nbCancelRecomputes() - prevColCancel);
+        prevKernelCancel = rows.nbCancelRecomputes();
+        prevColCancel = columns.nbCancelRecomputes();
+        nbClamps += rows.nbClamps() - prevKernelClamps;
+        prevKernelClamps = rows.nbClamps();
+        nbNonFinite += columns.nbNonFinite() - prevColNonFinite;
+        prevColNonFinite = columns.nbNonFinite();
 
         // ---- emit ------------------------------------------------------
+        double[] r = rows.r();
         for (int i = 0; i < m; i++) {
             double[] oi = out[i];
             for (int j = 0; j < n; j++) oi[j] = 0.0;
-            for (int k = rowStart[i]; k < rowStart[i + 1]; k++) oi[colIdx[k]] = nu[k];
+            for (int c = table.jobBegin[i]; c < table.jobEnd[i]; c++) oi[table.start[c]] = r[c];
         }
         return converged;
     }
@@ -304,6 +205,7 @@ public final class AssignmentBP {
     /** Discards the cached messages; the next run() starts from nu = 1. */
     public void invalidateWarmStart() {
         haveWarmStart = false;
+        rows.invalidate();
     }
 
     public int lastIterations() {
