@@ -20,9 +20,14 @@ import minicpbp.cp.Factory;
 import minicpbp.engine.constraints.Profile.Rectangle;
 import minicpbp.engine.core.AbstractConstraint;
 import minicpbp.engine.core.IntVar;
+import minicpbp.util.CandidateTable;
 import minicpbp.util.CumulativeBP;
 import minicpbp.util.CumulativeBlockBP;
 import minicpbp.util.CumulativeTimeTable;
+import minicpbp.util.ExactlyOneRows;
+import minicpbp.util.IntervalPackingDP;
+import minicpbp.util.PackingFactor;
+import minicpbp.util.ResourceMDD;
 import minicpbp.util.SchedStats;
 import minicpbp.util.SchedulingConfig;
 import minicpbp.util.exception.InconsistencyException;
@@ -64,6 +69,11 @@ public class Cumulative extends AbstractConstraint {
     private CumulativeBP bp;
     private CumulativeBlockBP blockBp; // amendment A3: used when SchedulingConfig.BP_BLOCK >= 2
     private CumulativeTimeTable timetable;
+    // ----- MDD_COUNTING_PLAN.md: candidate-interval engine (belief=mdd) -----
+    private CandidateTable table;
+    private ExactlyOneRows rows;
+    private PackingFactor packing;
+    private boolean packingIsInterval;
 
 
     /**
@@ -216,7 +226,12 @@ public class Cumulative extends AbstractConstraint {
         // ---- routine ----
         SchedulingConfig.BeliefRoutine routine = SchedulingConfig.BELIEF;
         boolean done = false;
-        if (routine == SchedulingConfig.BeliefRoutine.BP || routine == SchedulingConfig.BeliefRoutine.AUTO) {
+        if (routine == SchedulingConfig.BeliefRoutine.MDD) {
+            done = updateBeliefMdd(n);
+            // a decline or a numerical failure falls through to the 4A engine below
+        }
+        if (!done && (routine == SchedulingConfig.BeliefRoutine.BP || routine == SchedulingConfig.BeliefRoutine.AUTO
+                || routine == SchedulingConfig.BeliefRoutine.MDD)) {
             long budget = (routine == SchedulingConfig.BeliefRoutine.AUTO) ? SchedulingConfig.OPS_BUDGET : 0L;
             int status;
             long ops;
@@ -264,6 +279,68 @@ public class Cumulative extends AbstractConstraint {
             }
         }
         SchedStats.nanos += System.nanoTime() - t0;
+    }
+
+    /**
+     * The candidate-interval factorisation (MDD_COUNTING_PLAN.md §1): the
+     * Williams-Lau row kernel over a stable candidate table and a resource
+     * factor that is the exact interval-packing DP when Cap = 1 with unit
+     * demands (unless mddForce) and the resource MDD otherwise. Emits
+     * {@code out[i][k] = r_a} for live candidates, 0 for alive candidates that
+     * are infeasible against the committed profile of the bound jobs, 1 for
+     * inert jobs.
+     *
+     * @return false if the call declined (exact width blow-up) or failed
+     * numerically; {@code out} is then untouched
+     */
+    private boolean updateBeliefMdd(int n) {
+        if (table == null || !table.refresh(dom, domSize, a)) {
+            // first call, or (defensively) a value outside the table: (re)build
+            table = new CandidateTable(n, dom, domSize, duration, demand, capa);
+            table.refresh(dom, domSize, a);
+            boolean unit = capa == 1;
+            for (int i = 0; i < n && unit; i++) if (demand[i] != 1 && duration[i] > 0) unit = false;
+            packingIsInterval = unit && !SchedulingConfig.MDD_FORCE;
+            packing = packingIsInterval ? new IntervalPackingDP() : new ResourceMDD(SchedulingConfig.MDD_WIDTH);
+            if (rows == null) rows = new ExactlyOneRows();
+            rows.invalidate();
+        }
+        SchedStats.mddLiveSum += table.nLive;
+        if (table.nLiveJobs >= 2) {
+            rows.run(table, packing, SchedulingConfig.MDD_ITERS, SchedulingConfig.MDD_EPS, 1,
+                    SchedulingConfig.MDD_WARM, 1.0);
+            if (rows.lastFailed()) {
+                if (packing instanceof ResourceMDD && ((ResourceMDD) packing).lastDeclined()) SchedStats.mddDeclined++;
+                else SchedStats.mddNumericalFallbacks++;
+                rows.invalidate();
+                return false;
+            }
+            SchedStats.mddSweeps += rows.lastSweeps();
+            if (rows.lastConverged()) SchedStats.mddConverged++;
+            if (packing instanceof ResourceMDD) {
+                ResourceMDD mdd = (ResourceMDD) packing;
+                if (mdd.lastWidth() > SchedStats.mddWidthMax) SchedStats.mddWidthMax = mdd.lastWidth();
+                if (mdd.lastWidthBeforeMerge() > SchedStats.mddWidthBeforeMergeMax)
+                    SchedStats.mddWidthBeforeMergeMax = mdd.lastWidthBeforeMerge();
+                SchedStats.mddWidthSum += mdd.lastWidth();
+                if (mdd.lastRelaxed()) SchedStats.mddRelaxed++;
+            }
+        }
+        SchedStats.mddCalls++;
+        if (packingIsInterval) SchedStats.intervalCalls++;
+        double[] r = rows.r();
+        for (int i = 0; i < n; i++) {
+            if (start[i].isBound()) continue;
+            if (table.inert[i]) {
+                java.util.Arrays.fill(out[i], 0, domSize[i], 1.0);
+                continue;
+            }
+            for (int c = table.jobBegin[i]; c < table.jobEnd[i]; c++) {
+                if (!table.alive[c]) continue;
+                out[i][table.slot[c]] = table.live[c] ? (table.nLiveJobs >= 2 ? r[c] : 1.0) : 0.0;
+            }
+        }
+        return true;
     }
 
 }

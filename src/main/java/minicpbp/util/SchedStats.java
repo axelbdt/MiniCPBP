@@ -30,6 +30,29 @@ public final class SchedStats {
     public static long nanos;
     /** per-sweep operation count of the largest system seen (sum_t |A_t| (C+1)). */
     public static long maxOpsPerSweep;
+    // ---- MDD_COUNTING_PLAN.md (belief=mdd) ----
+    /** calls served by the candidate-interval engine (interval DP or MDD). */
+    public static long mddCalls;
+    /** of which by the interval DP (Cap = 1, unit demands). */
+    public static long intervalCalls;
+    /** inner Williams-Lau sweeps executed. */
+    public static long mddSweeps;
+    /** inner runs that stopped on the stability test. */
+    public static long mddConverged;
+    /** MDD calls that merged states beyond the width cap. */
+    public static long mddRelaxed;
+    /** exact-mode calls declined on the safety width (served by the 4A engine). */
+    public static long mddDeclined;
+    /** mdd calls that met NaN/Inf and fell back to the 4A engine. */
+    public static long mddNumericalFallbacks;
+    /** largest diagram width (nodes in a layer, after merging) over all calls. */
+    public static long mddWidthMax;
+    /** largest layer size before merging over all calls (lower bound on the exact width). */
+    public static long mddWidthBeforeMergeMax;
+    /** sum over MDD calls of the per-call width, for the mean. */
+    public static long mddWidthSum;
+    /** live candidates, summed over mdd calls (M per call). */
+    public static long mddLiveSum;
 
     private SchedStats() {
     }
@@ -44,11 +67,24 @@ public final class SchedStats {
                 + " schedBpNumFallback=" + bpNumericalFallbacks
                 + " schedInconsistent=" + inconsistent
                 + " schedMs=" + (nanos / 1000000)
-                + " schedMaxOps=" + maxOpsPerSweep;
+                + " schedMaxOps=" + maxOpsPerSweep
+                + " mddCalls=" + mddCalls
+                + " intervalCalls=" + intervalCalls
+                + " mddSweeps=" + mddSweeps
+                + " mddConverged=" + mddConverged
+                + " mddRelaxed=" + mddRelaxed
+                + " mddDeclined=" + mddDeclined
+                + " mddNumFallback=" + mddNumericalFallbacks
+                + " mddWidthMax=" + mddWidthMax
+                + " mddWidthPreMax=" + mddWidthBeforeMergeMax
+                + " mddWidthSum=" + mddWidthSum
+                + " mddLiveSum=" + mddLiveSum;
     }
 
     public static void reset() {
         calls = timetableCalls = bpCalls = bpSweeps = bpConverged = bpDeclined = 0;
         bpNumericalFallbacks = inconsistent = nanos = maxOpsPerSweep = 0;
+        mddCalls = intervalCalls = mddSweeps = mddConverged = mddRelaxed = mddDeclined = 0;
+        mddNumericalFallbacks = mddWidthMax = mddWidthBeforeMergeMax = mddWidthSum = mddLiveSum = 0;
     }
 }

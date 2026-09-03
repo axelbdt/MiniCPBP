@@ -39,6 +39,18 @@
  *                               copies, the Disjunctive objects themselves,
  *                               the reified pairwise block) out of the BP
  *                               graph. They still propagate. Amendment A2.
+ *  minicpbp.sched.belief=mdd    (MDD_COUNTING_PLAN.md) candidate-interval
+ *                               factorisation: Williams-Lau rows over the
+ *                               candidates (ExactlyOneRows) and a resource
+ *                               factor that is the exact interval-packing DP
+ *                               when Cap = 1 with unit demands, else a
+ *                               width-relaxed decision diagram (ResourceMDD)
+ *  minicpbp.sched.mddWidth      width cap of the diagram (default 64; 0 = exact)
+ *  minicpbp.sched.mddIters      inner sweep cap (default 1)
+ *  minicpbp.sched.mddEps        inner stability threshold (default 0.01)
+ *  minicpbp.sched.mddWarm       reuse the inner messages across calls (default true)
+ *  minicpbp.sched.mddForce      use the diagram even where the interval DP
+ *                               applies (default false; identity-check arm)
  *  minicpbp.sched.disjunctivePairwise  true | false (default true): whether
  *                               Disjunctive.post() materialises the reified
  *                               pairwise block (two IsLessOrEqualVar + notEqual
@@ -49,7 +61,7 @@ package minicpbp.util;
 
 public final class SchedulingConfig {
 
-    public enum BeliefRoutine {UNIFORM, TIMETABLE, BP, AUTO}
+    public enum BeliefRoutine {UNIFORM, TIMETABLE, BP, AUTO, MDD}
 
     public static final BeliefRoutine BELIEF;
     public static final int BP_ITERS;
@@ -65,6 +77,18 @@ public final class SchedulingConfig {
      * block when posted) are kept out of the BP graph; they still propagate.
      */
     public static final boolean BP_LEAN;
+    /**
+     * MDD_COUNTING_PLAN.md §1.2 (belief=mdd): the candidate-interval
+     * factorisation. Width cap of the resource MDD (0 = exact, with the
+     * safety limit of ResourceMDD), inner Williams-Lau sweep cap, stability
+     * threshold, warm start of the inner messages by candidate id, and the
+     * identity-check switch that forces the MDD where the interval DP applies.
+     */
+    public static final int MDD_WIDTH;
+    public static final int MDD_ITERS;
+    public static final double MDD_EPS;
+    public static final boolean MDD_WARM;
+    public static final boolean MDD_FORCE;
 
     static {
         BELIEF = BeliefRoutine.valueOf(System.getProperty("minicpbp.sched.belief", "uniform").toUpperCase());
@@ -76,6 +100,11 @@ public final class SchedulingConfig {
         OPS_BUDGET = Long.parseLong(System.getProperty("minicpbp.sched.opsBudget", "2000000"));
         DISJUNCTIVE_PAIRWISE = Boolean.parseBoolean(System.getProperty("minicpbp.sched.disjunctivePairwise", "true"));
         BP_LEAN = Boolean.parseBoolean(System.getProperty("minicpbp.sched.bpLean", "false"));
+        MDD_WIDTH = Integer.parseInt(System.getProperty("minicpbp.sched.mddWidth", "64"));
+        MDD_ITERS = Integer.parseInt(System.getProperty("minicpbp.sched.mddIters", "1"));
+        MDD_EPS = Double.parseDouble(System.getProperty("minicpbp.sched.mddEps", "0.01"));
+        MDD_WARM = Boolean.parseBoolean(System.getProperty("minicpbp.sched.mddWarm", "true"));
+        MDD_FORCE = Boolean.parseBoolean(System.getProperty("minicpbp.sched.mddForce", "false"));
     }
 
     private SchedulingConfig() {
@@ -89,6 +118,11 @@ public final class SchedulingConfig {
                 + " bpMinSweeps=" + BP_MIN_SWEEPS
                 + " opsBudget=" + OPS_BUDGET
                 + " disjunctivePairwise=" + DISJUNCTIVE_PAIRWISE
-                + " bpLean=" + BP_LEAN;
+                + " bpLean=" + BP_LEAN
+                + " mddWidth=" + MDD_WIDTH
+                + " mddIters=" + MDD_ITERS
+                + " mddEps=" + MDD_EPS
+                + " mddWarm=" + MDD_WARM
+                + " mddForce=" + MDD_FORCE;
     }
 }
