@@ -32,6 +32,7 @@ public class SolveXCSPFZN {
 		WDEG, //dom-wdeg
 		WDEGMXM, //dom-wdeg variable selection + max-marginal value selection, BP kept ON (probe O, BP_PROBE_PROTOCOL amendment 11)
 		WDEGRV, //dom-wdeg variable selection + uniform random value selection, no BP -- the unbiased value-rule control (N7, VALUE_ISOLATION_EXPERIMENT.md W4)
+		WDEGCNT, //dom-wdeg variable selection + value ordering by the incident counting constraints' solution densities, no BP (MDD_COUNTING_PLAN.md amendment A5)
 		IBS, //impact-based search
 	}
 
@@ -51,6 +52,7 @@ public class SolveXCSPFZN {
 			put("dom-wdeg", BranchingHeuristic.WDEG);
 			put("dom-wdeg-max-marginal", BranchingHeuristic.WDEGMXM);
 			put("dom-wdeg-random-value", BranchingHeuristic.WDEGRV);
+			put("dom-wdeg-count-value", BranchingHeuristic.WDEGCNT);
 			put("impact-based-search", BranchingHeuristic.IBS);
 		}
 	};

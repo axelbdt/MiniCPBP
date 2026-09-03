@@ -50,7 +50,7 @@ import static minicpbp.cp.Factory.plus;
  * to the same base variables and a second copy of the same factor would
  * square its message.
  */
-public class Cumulative extends AbstractConstraint {
+public class Cumulative extends AbstractConstraint implements minicpbp.engine.core.ValueCounter {
 
     private final IntVar[] start;
     private final int[] duration;
@@ -280,6 +280,75 @@ public class Cumulative extends AbstractConstraint {
             }
         }
         SchedStats.nanos += System.nanoTime() - t0;
+    }
+
+    /**
+     * Amendment A5: the configured counting routine run with uniform incoming
+     * messages, read for one variable. Only the primary (counting) object
+     * answers; mirrors and Disjunctive-internal copies that are not the
+     * counting object decline. The routine is the one {@code sched.belief}
+     * selects ({@code bp} or {@code mdd}, with the mdd flags); {@code uniform}
+     * declines.
+     */
+    @Override
+    public boolean valueScores(IntVar x, int[] values, int nVals, double[] scores) {
+        if (!counting || SchedulingConfig.BELIEF == SchedulingConfig.BeliefRoutine.UNIFORM
+                || SchedulingConfig.BELIEF == SchedulingConfig.BeliefRoutine.TIMETABLE) return false;
+        int pos = -1;
+        IntVar bx = x.getBaseVar();
+        for (int i = 0; i < start.length; i++) if (start[i].getBaseVar() == bx) { pos = i; break; }
+        if (pos < 0 || start[pos] != x) return false; // a view of the variable: the value map is not the identity
+        long t0 = System.nanoTime();
+        SchedStats.calls++;
+        int n = start.length;
+        if (dom == null) {
+            dom = new int[n][];
+            domSize = new int[n];
+            a = new double[n][];
+            out = new double[n][];
+            for (int i = 0; i < n; i++) {
+                int cap = start[i].max() - start[i].min() + 1;
+                dom[i] = new int[cap];
+                a[i] = new double[cap];
+                out[i] = new double[cap];
+            }
+        }
+        for (int i = 0; i < n; i++) {
+            if (demand[i] > capa && duration[i] > 0) { SchedStats.nanos += System.nanoTime() - t0; return false; }
+            int lo = start[i].min(), hi = start[i].max();
+            if (dom[i].length < hi - lo + 1) {
+                dom[i] = new int[hi - lo + 1];
+                a[i] = new double[hi - lo + 1];
+                out[i] = new double[hi - lo + 1];
+            }
+            int s = 0;
+            for (int v = lo; v <= hi; v++) {
+                if (start[i].contains(v)) {
+                    dom[i][s] = v;
+                    a[i][s] = 1.0; // uniform incoming message
+                    s++;
+                }
+            }
+            domSize[i] = s;
+        }
+        boolean done = false;
+        if (SchedulingConfig.BELIEF == SchedulingConfig.BeliefRoutine.MDD) done = updateBeliefMdd(n);
+        if (!done) {
+            if (bp == null) bp = new CumulativeBP();
+            int status = bp.run(n, dom, domSize, a, duration, demand, capa,
+                    SchedulingConfig.BP_ITERS, SchedulingConfig.BP_EPS, SchedulingConfig.BP_MIN_SWEEPS, 0L, out);
+            if (status != CumulativeBP.OK) { SchedStats.nanos += System.nanoTime() - t0; return false; }
+            SchedStats.bpCalls++;
+            SchedStats.bpSweeps += bp.lastSweeps();
+        }
+        // out[pos][k] follows dom[pos] (ascending); values[] is in fillArray order
+        for (int q = 0; q < nVals; q++) {
+            int v = values[q];
+            int k = java.util.Arrays.binarySearch(dom[pos], 0, domSize[pos], v);
+            scores[q] = (k >= 0) ? out[pos][k] : 0.0;
+        }
+        SchedStats.nanos += System.nanoTime() - t0;
+        return true;
     }
 
     /**

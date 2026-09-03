@@ -440,23 +440,67 @@ public class XCSP implements XCallbacks2 {
 		relConstraintVal(mapVar.get(x), op, k);
 	}
 
-	/*TODO
+	/**
+	 * x in {t} / x notin {t}. Unary, so it is domain pruning at post time, like
+	 * the relational unary primitive above (2026-09-02: needed by the XCSP3
+	 * scheduling series, e.g. Scheduling-jsdec-sadeh, whose release-date /
+	 * deadline groups the parser's recognizer turns into set primitives).
+	 */
 	@Override
-	public void buildCtrPrimitive(String id, XVarInteger x, Types.TypeConditionOperatorRel op, int[] t) {
+	public void buildCtrPrimitive(String id, XVarInteger x, Types.TypeConditionOperatorSet op, int[] t) {
 		if (hasFailed)
 			return;
-
+		try {
+			IntVar v = mapVar.get(x);
+			switch (op) {
+			case IN: {
+				Set<Integer> keep = new HashSet<>();
+				for (int k : t)
+					keep.add(k);
+				int[] dom = new int[v.size()];
+				int n = v.fillArray(dom);
+				for (int i = 0; i < n; i++)
+					if (!keep.contains(dom[i]))
+						v.remove(dom[i]);
+				break;
+			}
+			case NOTIN:
+				for (int k : t)
+					v.remove(k);
+				break;
+			default:
+				throw new InvalidParameterException("unknown set condition");
+			}
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
 	}
-	 */
 
-	/*TODO
+	/**
+	 * x in min..max / x notin min..max. Unary: domain pruning at post time.
+	 */
 	@Override
-	public void buildCtrPrimitive(String id, XVarInteger x, TypeConditionOperatorSet op, int min, int max) {
+	public void buildCtrPrimitive(String id, XVarInteger x, Types.TypeConditionOperatorSet op, int min, int max) {
 		if (hasFailed)
 			return;
-
+		try {
+			IntVar v = mapVar.get(x);
+			switch (op) {
+			case IN:
+				v.removeBelow(min);
+				v.removeAbove(max);
+				break;
+			case NOTIN:
+				for (int k = min; k <= max; k++)
+					v.remove(k);
+				break;
+			default:
+				throw new InvalidParameterException("unknown set condition");
+			}
+		} catch (InconsistencyException e) {
+			hasFailed = true;
+		}
 	}
-	 */
 
 	@Override
 	public void buildCtrPrimitive(String id, XVarInteger x, Types.TypeArithmeticOperator aop, int p,
@@ -2523,6 +2567,13 @@ public class XCSP implements XCallbacks2 {
 		case WDEG:
 			minicp.setMode(PropaMode.SP);
 			search = makeSearch(domWdeg(vars));
+			nbFailCutof = nbFailCutof*vars.length;
+			break;
+		case WDEGCNT:
+			// amendment A5 (MDD_COUNTING_PLAN.md §6.3): SP mode, no BP; the value
+			// comes from the incident ValueCounter constraints (Cumulative)
+			minicp.setMode(PropaMode.SP);
+			search = makeSearch(domWdegCountValue(vars));
 			nbFailCutof = nbFailCutof*vars.length;
 			break;
 		case WDEGRV:

@@ -18,6 +18,7 @@
 
 package minicpbp.cp;
 
+import minicpbp.engine.core.Constraint;
 import minicpbp.engine.core.IntVar;
 import minicpbp.engine.core.Solver;
 import minicpbp.engine.core.Solver.ConstraintWeighingScheme;
@@ -1064,6 +1065,70 @@ public final class BranchingScheme {
                             branchNotEqual(xs, v);
                         });
             }
+        };
+    }
+
+    /**
+     * Amendment A5 (MDD_COUNTING_PLAN.md §6.3): dom/wdeg variable selection
+     * with a value ordering by the product, over the {@link minicpbp.engine.core.ValueCounter}
+     * constraints incident to the selected variable, of their solution
+     * densities with uniform incoming messages. No BP engine: SP mode, no
+     * marginals, the counting constraints are asked directly and only for the
+     * branching variable. Falls back to the minimum value when no incident
+     * constraint answers (then identical to {@link #domWdeg}). Ties break
+     * towards the smallest value.
+     *
+     * @param x the variables on which the strategy is applied
+     * @return a dom/wdeg branching strategy with count-driven value selection
+     */
+    public static Supplier<Procedure[]> domWdegCountValue(IntVar... x) {
+        for (IntVar a : x)
+            a.setForBranching(true);
+        Solver cp = x[0].getSolver();
+        final int[] values = new int[Math.max(1, java.util.Arrays.stream(x).mapToInt(IntVar::size).max().orElse(1))];
+        final double[] scores = new double[values.length];
+        final double[] acc = new double[values.length];
+        final java.util.ArrayList<minicpbp.engine.core.ValueCounter> counters = new java.util.ArrayList<>();
+        return () -> {
+            IntVar xs = selectMin(x,
+                    xi -> xi.size() > 1,
+                    xi -> ((double) xi.size()) / ((double) xi.wDeg()));
+            if (xs == null)
+                return EMPTY;
+            int n = xs.fillArray(values);
+            java.util.Arrays.fill(acc, 0, n, 1.0);
+            boolean any = false;
+            IntVar base = xs.getBaseVar();
+            minicpbp.state.StateStack<Constraint> all = cp.getConstraints();
+            for (int ci = 0, nc = all.size(); ci < nc; ci++) {
+                Constraint c = all.get(ci);
+                if (!(c instanceof minicpbp.engine.core.ValueCounter) || !c.isActive()) continue;
+                boolean inScope = false;
+                for (IntVar v : c.getScope()) if (v.getBaseVar() == base) { inScope = true; break; }
+                if (!inScope) continue;
+                if (((minicpbp.engine.core.ValueCounter) c).valueScores(xs, values, n, scores)) {
+                    any = true;
+                    for (int q = 0; q < n; q++) acc[q] *= scores[q];
+                }
+            }
+            int v = xs.min();
+            if (any) {
+                double best = -1.0;
+                for (int q = 0; q < n; q++) {
+                    if (acc[q] > best || (acc[q] == best && values[q] < v)) { best = acc[q]; v = values[q]; }
+                }
+                if (best <= 0.0) v = xs.min();
+            }
+            final int val = v;
+            return branch(
+                    () -> {
+                        Log.branchEqual(xs.getName(), val);
+                        branchEqual(xs, val);
+                    },
+                    () -> {
+                        Log.branchNotEqual(xs.getName(), val);
+                        branchNotEqual(xs, val);
+                    });
         };
     }
 
