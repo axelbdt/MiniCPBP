@@ -32,6 +32,7 @@ import minicpbp.util.CountVectorDP;
 import minicpbp.util.GccBP;
 import minicpbp.util.GccBeliefHarvester;
 import minicpbp.util.GccConfig;
+import minicpbp.util.GccFoldStats;
 import minicpbp.util.GraphUtil;
 import minicpbp.util.LoBiancoBound;
 import minicpbp.util.SelfRefOracle;
@@ -97,6 +98,14 @@ public class CardinalityDC extends AbstractConstraint {
     private final double[][] msgOcc; // k x (n+1) messages to occurrence variables
     private CountVectorDP dp;
     private GccBP bp;
+    // ----- WP1 closed-case fold scratch (k-1 classes) -----
+    private double[][] foldA;
+    private double[] foldB;
+    private int[] foldLow;
+    private int[] foldUp;
+    private double[][] foldWOcc;
+    private double[][] foldMsg;
+    private double[][] foldMsgOcc;
     private LoBiancoBound lobianco;
     private SelfRefOracle selfDp;
     /**
@@ -436,15 +445,37 @@ public class CardinalityDC extends AbstractConstraint {
             return;
         }
 
+        // ---- WP1: closed-case fold (AMONG_GCC_OPTIMIZATION_PLAN.md T2) ----
+        // Under the T2 condition the counted classes cover every domain value,
+        // every o_j is bound and sum_j o_j = n. Then class j0 is implied by the
+        // others: its count is forced, so folding it into the "other" class
+        // computes the SAME partition function and the same messages on one
+        // fewer class. The exact DP's state space drops by up[j0]+1 and nested
+        // BP loses one column (the redundant SUM of the paper's section 5.1).
+        int foldJ = closedFoldClass();
+        int kk = k;
+        double[][] aa = a;
+        double[] bb = b;
+        int[] ll = low, uu = up;
+        double[][] ww = wOcc, mm = msg, mo = msgOcc;
+        if (foldJ >= 0) {
+            GccFoldStats.folded++;
+            buildFold(foldJ);
+            kk = k - 1;
+            aa = foldA; bb = foldB; ll = foldLow; uu = foldUp;
+            ww = foldWOcc; mm = foldMsg; mo = foldMsgOcc;
+        }
+        GccFoldStats.calls++;
+
         boolean exact = false;
         boolean trueExact = false; // exact for the FULL constraint (incl. self-reference)
-        long states = CountVectorDP.stateCount(up, GccConfig.MAX_STATES);
+        long states = CountVectorDP.stateCount(uu, GccConfig.MAX_STATES);
         boolean withinBudget = states > 0
                 && (routine == GccConfig.BeliefRoutine.EXACT   // EXACT: memory cap only
-                    || states * (k + 1) * (long) n <= GccConfig.OPS_BUDGET); // AUTO: ops budget
+                    || states * (kk + 1) * (long) n <= GccConfig.OPS_BUDGET); // AUTO: ops budget
         if ((routine == GccConfig.BeliefRoutine.EXACT || routine == GccConfig.BeliefRoutine.AUTO)
                 && withinBudget) {
-            for (int j = 0; j < k; j++) java.util.Arrays.fill(msgOcc[j], 0, up[j] + 1, 0.0);
+            for (int j = 0; j < kk; j++) java.util.Arrays.fill(mo[j], 0, uu[j] + 1, 0.0);
             if (selfReferential && selfExactApplicable()) {
                 // Round 3 (2026-08-18): the TRUE self-referential count-vector
                 // DP — enforces x_i = c_j when o_j IS x_i — at the same
@@ -454,26 +485,27 @@ public class CardinalityDC extends AbstractConstraint {
                 // classes then really is infeasible, never an aggregated
                 // "other" value the DP cannot weight). See SelfRefOracle.
                 if (selfDp == null) selfDp = new SelfRefOracle(GccConfig.MAX_STATES);
-                double z = selfDp.run(n, k, a, b, low, up, wOcc, vals, selfIdx, msg, msgOcc);
+                double z = selfDp.run(n, kk, aa, bb, ll, uu, ww, vals, selfIdx, mm, mo);
                 exact = z >= 0;
                 trueExact = exact;
             } else {
                 if (dp == null) dp = new CountVectorDP(GccConfig.MAX_STATES);
-                double z = dp.run(n, k, a, b, low, up, wOcc, msg, msgOcc);
+                double z = dp.run(n, kk, aa, bb, ll, uu, ww, mm, mo);
                 exact = z >= 0;
                 trueExact = exact && !selfReferential;
             }
         }
         if (!exact) {
             if (bp == null) bp = new GccBP();
-            for (int j = 0; j < k; j++) java.util.Arrays.fill(msgOcc[j], 0, up[j] + 1, 0.0);
-            if (!bp.run(n, k, a, b, low, up, wOcc, GccConfig.BP_ITERS, msg, msgOcc,
+            for (int j = 0; j < kk; j++) java.util.Arrays.fill(mo[j], 0, uu[j] + 1, 0.0);
+            if (!bp.run(n, kk, aa, bb, ll, uu, ww, GccConfig.BP_ITERS, mm, mo,
                     GccConfig.BP_EPS, GccConfig.BP_WARM,
                     GccConfig.BP_MIN_COLD, GccConfig.BP_MIN_WARM)) {
                 super.updateBelief(); // numerical failure: uniform fallback
                 return;
             }
         }
+        if (foldJ >= 0) unfold(foldJ);
         setExactWCounting(trueExact);
         // ---- emit messages for x ----
         for (int i = 0; i < n; i++) {
@@ -492,6 +524,97 @@ public class CardinalityDC extends AbstractConstraint {
                 double v = (c >= 0 && c <= up[j] && c >= low[j]) ? msgOcc[j][c] : 0.0;
                 setLocalBelief(n + j, c, beliefRep.std2rep(v));
             }
+        }
+    }
+
+    // =====================================================================
+    // WP1: the closed-case fold (AMONG_GCC_OPTIMIZATION_PLAN.md T2)
+    // =====================================================================
+
+    /**
+     * Returns the class to fold into "other", or -1 when the T2 condition
+     * fails. The condition, checkable in O(n + k):
+     * <ul>
+     *   <li>closed: no variable puts belief mass on an uncounted value
+     *       (b[i] == 0 for all i), so sum_j c_j = n on every assignment;</li>
+     *   <li>every occurrence variable is bound (low[j] == up[j]);</li>
+     *   <li>sum_j o_j = n.</li>
+     * </ul>
+     * Then the feasible values of sum_{j != j0} c_j form the singleton
+     * {n - o_j0}, so class j0 carries no information the other columns do not
+     * already carry: it behaves exactly as the "other" class. The folded
+     * system has the same partition function and the same messages, on one
+     * fewer class.
+     * <p>j0 = argmax up[j] maximises the state-space reduction (S / (up+1)).
+     * <p>Self-referential systems are excluded: SelfRefOracle indexes classes
+     * by {@code vals}/{@code selfIdx}, which the fold renumbers.
+     */
+    private int closedFoldClass() {
+        if (!GccConfig.CLOSED_FOLD || k < 2 || selfReferential) return -1;
+        for (int i = 0; i < n; i++) if (b[i] != 0.0) return -1;
+        int sum = 0, best = -1, bestUp = -1;
+        for (int j = 0; j < k; j++) {
+            if (low[j] != up[j]) return -1;
+            sum += up[j];
+            if (up[j] > bestUp) { bestUp = up[j]; best = j; }
+        }
+        if (sum != n) return -1;
+        return best;
+    }
+
+    /** builds the k-1 class system with class j0 folded into "other". */
+    private void buildFold(int j0) {
+        int kf = k - 1;
+        if (foldA == null || foldA[0].length < Math.max(kf, 1)) {
+            foldA = new double[n][Math.max(kf, 1)];
+            foldB = new double[n];
+            foldLow = new int[Math.max(kf, 1)];
+            foldUp = new int[Math.max(kf, 1)];
+            foldWOcc = new double[Math.max(kf, 1)][];
+            foldMsg = new double[n][Math.max(kf, 1) + 1];
+            foldMsgOcc = new double[Math.max(kf, 1)][n + 1];
+        }
+        for (int i = 0; i < n; i++) {
+            int t = 0;
+            for (int j = 0; j < k; j++) {
+                if (j == j0) continue;
+                foldA[i][t++] = a[i][j];
+            }
+            foldB[i] = a[i][j0]; // the folded class IS the "other" class
+        }
+        int t = 0;
+        for (int j = 0; j < k; j++) {
+            if (j == j0) continue;
+            foldLow[t] = low[j];
+            foldUp[t] = up[j];
+            foldWOcc[t] = wOcc[j];
+            t++;
+        }
+    }
+
+    /** copies the folded messages back into msg/msgOcc, in the original class numbering. */
+    private void unfold(int j0) {
+        int kf = k - 1;
+        for (int i = 0; i < n; i++) {
+            int t = 0;
+            for (int j = 0; j < k; j++) {
+                if (j == j0) continue;
+                msg[i][j] = foldMsg[i][t++];
+            }
+            msg[i][j0] = foldMsg[i][kf]; // the "other" message IS class j0's
+            msg[i][k] = 0.0;             // closed: no uncounted value is in any domain
+        }
+        // Every o_j is bound under T2, and the exact message to o_j (its own
+        // weight excluded) is supported on the single count o_j: with the other
+        // k-1 counts pinned and the system closed, no other count for class j
+        // completes to n. So the message is the 0/1 indicator at up[j] for
+        // every class, including the folded one — which is also what the folded
+        // DP cannot report, since it no longer carries class j0's filter.
+        // These messages are in any case discarded downstream:
+        // AbstractConstraint.sendMessages() skips bound variables.
+        for (int j = 0; j < k; j++) {
+            java.util.Arrays.fill(msgOcc[j], 0, up[j] + 1, 0.0);
+            msgOcc[j][up[j]] = 1.0;
         }
     }
 }

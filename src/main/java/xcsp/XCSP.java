@@ -2565,7 +2565,12 @@ public class XCSP implements XCallbacks2 {
 			search = makeSearch(minEntropyBiasedWheelSelectVal(vars));
 			break;
 		case WDEG:
-			minicp.setMode(PropaMode.SP);
+			// -Dexp.forceSBP=true keeps belief propagation ON under the
+			// deterministic dom/wdeg tree (BP_COST_PROFILE.md Part 0). BP never
+			// removes a value (MiniCP.actOnZeroOneBelief=false), so SP and SBP
+			// explore a byte-identical tree and the wall-clock difference is
+			// exactly the price of BP. Default unchanged (SP).
+			minicp.setMode(Boolean.getBoolean("exp.forceSBP") ? PropaMode.SBP : PropaMode.SP);
 			search = makeSearch(domWdeg(vars));
 			nbFailCutof = nbFailCutof*vars.length;
 			break;

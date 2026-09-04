@@ -37,6 +37,12 @@
  *                           restoring the fixed-sweep behaviour)
  *  minicpbp.gcc.bpMinCold   minimum sweeps, cold start (default 2)
  *  minicpbp.gcc.bpMinWarm   minimum sweeps, warm start (default 1)
+ *  minicpbp.gcc.closedFold  true | false (default true): under the T2
+ *                           condition of AMONG_GCC_OPTIMIZATION_PLAN.md
+ *                           (closed system, every o_j bound, sum o_j = n)
+ *                           fold the class with the largest bound into the
+ *                           "other" class before dispatching. Same messages,
+ *                           one fewer class.
  *  minicpbp.gcc.bpWarm      true | false (default true): reuse the previous
  *                           call's messages as the starting point when the
  *                           edge structure (n, k, low, up, domain edges) is
@@ -63,6 +69,7 @@ public final class GccConfig {
     public static final int BP_MIN_COLD;
     public static final int BP_MIN_WARM;
     public static final boolean BP_WARM;
+    public static final boolean CLOSED_FOLD;
     public static final String HARVEST_FILE;
     public static final String HARVEST_TAG;
     public static final int HARVEST_PER_BUCKET;
@@ -79,6 +86,7 @@ public final class GccConfig {
         BP_MIN_WARM = Integer.parseInt(System.getProperty("minicpbp.gcc.bpMinWarm",
                 Integer.toString(GccBP.DEFAULT_MIN_SWEEPS_WARM)));
         BP_WARM = Boolean.parseBoolean(System.getProperty("minicpbp.gcc.bpWarm", "true"));
+        CLOSED_FOLD = Boolean.parseBoolean(System.getProperty("minicpbp.gcc.closedFold", "true"));
         HARVEST_FILE = System.getProperty("minicpbp.gcc.harvest", "");
         HARVEST_TAG = System.getProperty("minicpbp.gcc.harvestTag", "unknown");
         HARVEST_PER_BUCKET = Integer.parseInt(System.getProperty("minicpbp.gcc.harvestPerBucket", "2000"));
@@ -95,6 +103,7 @@ public final class GccConfig {
         return "post=" + POST + " belief=" + BELIEF + " maxStates=" + MAX_STATES
                 + " opsBudget=" + OPS_BUDGET + " bpIters=" + BP_ITERS
                 + " bpEps=" + BP_EPS + " bpMinCold=" + BP_MIN_COLD
-                + " bpMinWarm=" + BP_MIN_WARM + " bpWarm=" + BP_WARM;
+                + " bpMinWarm=" + BP_MIN_WARM + " bpWarm=" + BP_WARM
+                + " closedFold=" + CLOSED_FOLD;
     }
 }

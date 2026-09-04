@@ -1851,6 +1851,13 @@ public final class Factory {
         if (bc) {
             return new AmongVarBC(x,V,o);
         }
+        else if (minicpbp.util.AmongConfig.POST == minicpbp.util.AmongConfig.Post.DIRECT
+                 && !AmongCount.selfReferential(x, o)) {
+            // WP2 of AMONG_GCC_OPTIMIZATION_PLAN.md: the direct counter, no
+            // indicator variables. Self-referential postings (o is one of x)
+            // keep the decomposition, whose channelling handles them.
+            return new AmongCount(x, V, o);
+        }
         else {
             Solver cp = x[0].getSolver();
             IntVar[] vars = Arrays.copyOf(x, 2 * x.length);
