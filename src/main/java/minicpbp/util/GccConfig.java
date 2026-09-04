@@ -23,6 +23,11 @@
  *                                  not a bound — Phase 3 arm 2); occurrence
  *                                  variables get uniform messages (the
  *                                  closed form has no count channel)
+ *                           grouped: GccGroupBP, m joint count factors over
+ *                                  a partition of the classes (WP3); m = 1 is
+ *                                  the exact DP and m = k is bp, so the arm
+ *                                  interpolates between them under the
+ *                                  per-group state cap opsBudget/(n*(k+1))
  *  minicpbp.gcc.maxStates   exact-DP state-space cap, prod(up_j + 1) (default 65536,
  *                           a memory bound: (n+2)*states doubles)
  *  minicpbp.gcc.opsBudget   exact-DP operation budget n*(k+1)*states (default 40000,
@@ -58,7 +63,7 @@ public final class GccConfig {
 
     public enum Post {DECOMP, REGIN}
 
-    public enum BeliefRoutine {UNIFORM, EXACT, BP, AUTO, LOBIANCO}
+    public enum BeliefRoutine {UNIFORM, EXACT, BP, AUTO, LOBIANCO, GROUPED}
 
     public static final Post POST;
     public static final BeliefRoutine BELIEF;

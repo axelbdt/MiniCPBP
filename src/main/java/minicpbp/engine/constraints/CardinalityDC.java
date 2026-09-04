@@ -98,6 +98,7 @@ public class CardinalityDC extends AbstractConstraint {
     private final double[][] msgOcc; // k x (n+1) messages to occurrence variables
     private CountVectorDP dp;
     private GccBP bp;
+    private minicpbp.util.GccGroupBP groupBp;
     // ----- WP1 closed-case fold scratch (k-1 classes) -----
     private double[][] foldA;
     private double[] foldB;
@@ -495,7 +496,22 @@ public class CardinalityDC extends AbstractConstraint {
                 trueExact = exact && !selfReferential;
             }
         }
-        if (!exact) {
+        if (!exact && routine == GccConfig.BeliefRoutine.GROUPED) {
+            // WP3: m joint count factors over a partition of the classes. The
+            // per-group state cap follows the same operation budget the exact
+            // arm uses, so a group's DP costs no more than one exact call
+            // would be allowed to: n * S_g * (|G_g|+1) <= opsBudget.
+            if (groupBp == null) groupBp = new minicpbp.util.GccGroupBP(GccConfig.MAX_STATES);
+            for (int j = 0; j < kk; j++) java.util.Arrays.fill(mo[j], 0, uu[j] + 1, 0.0);
+            long cap = Math.max(2L, GccConfig.OPS_BUDGET / (Math.max(1, n) * (long) (kk + 1)));
+            if (!groupBp.run(n, kk, aa, bb, ll, uu, ww, GccConfig.BP_ITERS, mm, mo,
+                    GccConfig.BP_EPS, cap, GccConfig.BP_MIN_COLD)) {
+                super.updateBelief(); // numerical failure: uniform fallback
+                return;
+            }
+            exact = groupBp.lastGroups() == 1;
+            trueExact = exact && !selfReferential;
+        } else if (!exact) {
             if (bp == null) bp = new GccBP();
             for (int j = 0; j < kk; j++) java.util.Arrays.fill(mo[j], 0, uu[j] + 1, 0.0);
             if (!bp.run(n, kk, aa, bb, ll, uu, ww, GccConfig.BP_ITERS, mm, mo,
