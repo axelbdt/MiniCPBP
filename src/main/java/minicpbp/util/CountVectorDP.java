@@ -201,9 +201,20 @@ public final class CountVectorDP {
         double sum = 0.0;
         for (int s = 0; s < S; s++) sum += v[s];
         if (sum > 0 && (sum < 1e-100 || sum > 1e100)) {
+            double removed = 0.0;
+            if (sum < 1e-200) {
+                // A subnormal layer sum (a cavity belief of ~1e-323 reaching the
+                // DP, WP2b on SeqEq-60-2-1-w8-k3 under topo) makes 1.0/sum
+                // overflow to +Infinity and every message Inf or NaN. Lift the
+                // layer into the normal range first; the two-step rescale is
+                // exact up to the precision the subnormals had to begin with.
+                for (int s = 0; s < S; s++) v[s] *= 1e200;
+                sum *= 1e200;
+                removed = 200.0 * Math.log(10.0);
+            }
             double inv = 1.0 / sum;
             for (int s = 0; s < S; s++) v[s] *= inv;
-            return Math.log(sum);
+            return Math.log(sum) - removed;
         }
         return 0.0;
     }
